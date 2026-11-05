@@ -33,3 +33,5 @@ Verify the generated package and ZIP, then publish reviewed main through the pro
 Keep existing versions, tags and release assets immutable.
 
 Derive the tar member cap from the exact approved inventory. Verify an actual twelve-member tarball and refusal of extra members. Catalog data remains immutable across compilation of authored source.
+
+Diagnostic catalog contract: locked 2026-11-05 following independent review.
