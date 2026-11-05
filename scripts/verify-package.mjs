@@ -235,7 +235,7 @@ export function verifyDiagnosticCatalog(bytes) {
   const populations = { sourceError: 0, sourceWarning: 0, overlayError: 0 };
   for (const entry of value.diagnostics) {
     keys(entry, ['code', 'family', 'severity', 'message', 'cause', 'fix', 'docsAnchor', 'docsUrl'], 'diagnostic record');
-    requireThat(typeof entry.code === 'string' && /^[A-Z]+(?:_[A-Z]+)*$/.test(entry.code) && entry.code.length <= 80 && !seen.has(entry.code), 'diagnostic code is invalid or duplicated');
+    requireThat(typeof entry.code === 'string' && /^[A-Z]+(?:_[A-Z]+)*$/.exec(entry.code)?.[0] === entry.code && entry.code.length <= 80 && !seen.has(entry.code), 'diagnostic code is invalid or duplicated');
     seen.add(entry.code);
     for (const [name, maximum] of [['message', 512], ['cause', 1024], ['fix', 1024]]) requireThat(typeof entry[name] === 'string' && [...entry[name]].length >= 1 && [...entry[name]].length <= maximum, `diagnostic ${name} is outside its bound`);
     const anchor = entry.code.toLowerCase().replaceAll('_', '-');

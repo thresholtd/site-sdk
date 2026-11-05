@@ -311,6 +311,7 @@ for (const [name, mutate, expected] of [
   ['unknown field', value => { value.diagnostics[0].unexpected = true; }, /diagnostic record/],
   ['duplicate code', value => { value.diagnostics[0].code = value.diagnostics[1].code; value.diagnostics[0].docsAnchor = value.diagnostics[1].docsAnchor; value.diagnostics[0].docsUrl = value.diagnostics[1].docsUrl; }, /duplicated/],
   ['prototype code', value => { value.diagnostics[0].code = 'constructor'; }, /diagnostic code/],
+  ['paired trailing newline', value => { const entry = value.diagnostics[0]; entry.code += '\n'; entry.docsAnchor += '\n'; entry.docsUrl += '\n'; }, /diagnostic code/],
   ['alternate origin', value => { value.diagnostics[0].docsUrl = value.diagnostics[0].docsUrl.replace('docs.thresho.com', 'evil.invalid'); }, /URL does not match/],
   ['anchor substitution', value => { value.diagnostics[0].docsUrl = 'https://docs.thresho.com/reference/diagnostics#invalid-package'; }, /URL does not match/],
   ['anchor', value => { value.diagnostics[0].docsAnchor = 'other'; }, /URL does not match/],
