@@ -1,0 +1,55 @@
+name: Bootstrap site SDK publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Initial stable version tag
+        type: string
+        default: v2.0.0
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-sdk-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    timeout-minutes: 20
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: npm-publish
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24.21.0'
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org
+          scope: '@thresho'
+      - name: Record runtime versions
+        run: |
+          node --version
+          npm --version
+          test "$(node --version)" = "v24.21.0"
+          test "$(npm --version)" = "11.19.0"
+      - name: Verify initial artifacts
+        run: |
+          test "$RELEASE_TAG" = "v2.0.0"
+          node scripts/verify-package.mjs --tag "$RELEASE_TAG"
+      - name: Publish initial immutable artifacts
+        env:
+          NPM_ACCESS_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
+        run: node scripts/publish.mjs publish --tag "$RELEASE_TAG"

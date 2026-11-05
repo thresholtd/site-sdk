@@ -1,0 +1,43 @@
+{
+  "name": "@thresho/site-sdk",
+  "version": "2.0.0",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thresholtd/site-sdk.git"
+  },
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts"
+    },
+    "./jsx-runtime": {
+      "types": "./jsx-runtime.d.ts"
+    },
+    "./jsx-dev-runtime": {
+      "types": "./jsx-dev-runtime.d.ts"
+    },
+    "./tsconfig.json": "./tsconfig.json",
+    "./schema/manifest.schema.json": "./schema/manifest.schema.json",
+    "./schema/source.schema.json": "./schema/source.schema.json",
+    "./vocabulary.json": "./vocabulary.json"
+  },
+  "files": [
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "index.d.ts",
+    "jsx-dev-runtime.d.ts",
+    "jsx-runtime.d.ts",
+    "schema/manifest.schema.json",
+    "schema/source.schema.json",
+    "tsconfig.json",
+    "vocabulary.json"
+  ],
+  "thresho": {
+    "formatVersion": 2,
+    "compilerVersion": "site-source-compiler/10",
+    "vocabularyDigest": "288e401dfa7080e62d12f5dce773cb2bbc264efe286b3cc81bf2474143560992"
+  }
+}
