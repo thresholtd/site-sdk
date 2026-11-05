@@ -10,17 +10,11 @@ The package has no executable JavaScript or runtime dependency.
 
 Publish only reviewed source through the protected `npm-publish` environment.
 Use Node v24.21.0 and npm 11.19.0 for publication.
-Use the temporary bootstrap workflow for version 2.0.0. Use OIDC for later versions.
-The bootstrap workflow stages the initial package with its provenance attachment.
-It does not approve the stage or create GitHub release assets.
-Approve only the exact stage ID and source commit from a confirmed `pending-approval` workflow result.
-Complete approval through interactive npm 2FA. Then use `release-only` with that source commit.
-An `observed-incomplete` result requires a separate stage status check before approval.
-An earlier stage or a lost stage response has no attributed source identity in this workflow.
-Do not retry, delete or approve such a stage from its byte equality alone.
+Use the permanent `publish.yml` workflow with OIDC for each new version.
 Keep tokens out of source, logs, evidence and workflow inputs.
 
 Publication is immutable. Never overwrite a package version, tag or release asset.
 If a write response is lost, inspect its remote state.
 Use `release-only` with the exact source commit to complete an observed package publication.
 This mode verifies the existing package integrity and provenance before any release write.
+For version 2.0.0 recovery, use source commit `70f59a95d287204aae96acfd404ac510dfd4683b`.
