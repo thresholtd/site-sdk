@@ -193,7 +193,7 @@ async function observedStages(ports, verified) {
     const bytes = await ports.npm.readStageTarball(item.id);
     requireThat(Buffer.isBuffer(bytes) && bytes.length <= 1048576, 'npm stage tarball exceeds its bound');
     requireThat(createHash('sha1').update(bytes).digest('hex') === item.shasum, 'npm stage SHA-1 differs from its tarball');
-    requireThat(verifyTarball(bytes, verified.packageFiles) === verified.integrity, 'npm stage SHA-512 differs from the verified local tarball');
+    requireThat(verifyRemoteTarball(bytes, verified.packageFiles, 'npm stage tarball') === verified.integrity, 'npm stage SHA-512 differs from the verified local tarball');
     observed.push({ stageId: item.id, status: item.status });
   }
   return observed;
@@ -244,18 +244,23 @@ async function inspectGithub(ports, { tag, sourceCommit, assets }) {
     requireThat(remoteTag !== null && release.tagName === tag && release.sourceCommit === sourceCommit, 'remote release belongs to another source commit');
     requireThat(Array.isArray(release.assets) && release.assets.every(asset => asset && typeof asset.name === 'string') && new Set(release.assets.map(asset => asset.name)).size === release.assets.length, 'release asset inventory is invalid');
     for (const asset of release.assets) {
-      requireThat(assets.has(asset.name), `unexpected remote release asset: ${asset.name}`);
+      requireThat(assets.has(asset.name), 'unexpected remote release asset');
       const bytes = await ports.github.readAsset(release, asset.name);
-      requireThat(Buffer.isBuffer(bytes) && bytes.equals(assets.get(asset.name)), `conflicting remote release asset: ${asset.name}`);
+      requireThat(Buffer.isBuffer(bytes) && bytes.equals(assets.get(asset.name)), 'conflicting remote release asset');
     }
   }
   return { remoteTag, release };
 }
 
+function verifyRemoteTarball(bytes, packageFiles, label) {
+  try { return verifyTarball(bytes, packageFiles); }
+  catch { throw new Error(`${label} archive is invalid`); }
+}
+
 async function matchingPackage(ports, verified, sourceCommit, tag, current) {
   const remote = current === undefined ? await ports.npm.readVersion(verified.packageJson.version) : current;
   requireThat(remote !== null && remote.name === verified.packageJson.name && remote.version === verified.packageJson.version && typeof remote.integrity === 'string' && Buffer.isBuffer(remote.tarball), 'published npm version is absent or malformed');
-  requireThat(verifyTarball(remote.tarball, verified.packageFiles) === remote.integrity, 'published npm tarball bytes or integrity differ from the verified source');
+  requireThat(verifyRemoteTarball(remote.tarball, verified.packageFiles, 'published npm tarball') === remote.integrity, 'published npm tarball bytes or integrity differ from the verified source');
   const audited = await ports.npm.verifySignatures(verified.packageJson.version);
   verifyAuditedProvenance(audited, { version: verified.packageJson.version, tag, sourceCommit, tarball: remote.tarball });
   return remote;

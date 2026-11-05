@@ -300,8 +300,8 @@ for (const [name, options, expected] of [
   ['conflicting tag', { tag: otherCommit }, /another source commit/],
   ['conflicting release', { tag: sourceCommit, release: { sourceCommit: otherCommit } }, /another source commit/],
   ['release without tag', { release: {} }, /another source commit/],
-  ['unexpected asset', { tag: sourceCommit, release: {}, assets: [['unknown.txt', Buffer.from('x')]] }, /unexpected remote release asset/],
-  ['conflicting asset', { tag: sourceCommit, release: {}, assets: [['SHA256SUMS', Buffer.from('x')]] }, /conflicting remote release asset/],
+  ['unexpected asset', { tag: sourceCommit, release: {}, assets: [['unknown.txt', Buffer.from('x')]] }, /^Error: unexpected remote release asset$/],
+  ['conflicting asset', { tag: sourceCommit, release: {}, assets: [['SHA256SUMS', Buffer.from('x')]] }, /^Error: conflicting remote release asset$/],
   ['asset read failure', { tag: sourceCommit, release: {}, assets: [['SHA256SUMS', Buffer.from('x')]], failedRead: 'github.readAsset' }, /read unavailable/],
 ]) {
   test(`T10 refuses ${name} before npm or GitHub mutation`, async () => {
@@ -343,7 +343,7 @@ test('T10 release-only requires explicit reviewed source and an observed matchin
   fake.state.package = { ...fake.matching(), integrity: 'sha512-wrong' };
   await assert.rejects(fake.run('release-only'), /integrity differ/);
   fake.state.package = { ...fake.matching(), tarball: gzipSync(Buffer.alloc(1024)) };
-  await assert.rejects(fake.run('release-only'), /tarball inventory/);
+  await assert.rejects(fake.run('release-only'), /^Error: published npm tarball archive is invalid$/);
   assert.deepEqual(fake.writes, []);
 });
 
@@ -840,7 +840,7 @@ test('T13 stage tarball checks enforce member bytes, SHA-512 and the processing 
   const input = await prepared();
   const changedFiles = new Map(input.verified.packageFiles);
   changedFiles.set('index.d.ts', Buffer.from('altered member'));
-  for (const [tarball, expected] of [[gzipSync(input.rawTar, { level: 1 }), /SHA-512 differs/], [gzipSync(ustar(changedFiles)), /differs from generated package/], [Buffer.alloc(1048577), /exceeds its bound/]]) {
+  for (const [tarball, expected] of [[gzipSync(input.rawTar, { level: 1 }), /SHA-512 differs/], [gzipSync(ustar(changedFiles)), /^Error: npm stage tarball archive is invalid$/], [Buffer.alloc(1048577), /exceeds its bound/]]) {
     const fake = stagingFake(input, { tarball });
     await assert.rejects(fake.runStage(), expected);
     assert.deepEqual(fake.writes, ['npm.stage']);
@@ -970,4 +970,54 @@ test('T15 vendor JSON parse errors never repeat credential text', async () => {
   await assert.rejects(audit.ports.npm.verifySignatures('2.0.0'), error => error.message === 'npm signature audit response is malformed' && !JSON.stringify(error).includes(secret));
   const github = await commandBoundary([{ tool: 'gh', prefix: ['api', '--include'], stdout: `HTTP/2.0 200 OK\r\n\r\nnot JSON ${secret}` }]);
   await assert.rejects(github.ports.github.readTag(tag), error => error.message === 'GitHub state response is malformed' && !JSON.stringify(error).includes(secret));
+});
+
+function safeRemoteRefusal(expected, secret, events) {
+  return error => {
+    assert.equal(error.message, expected);
+    for (const value of [String(error), error.stack, JSON.stringify(error), JSON.stringify(error, Object.getOwnPropertyNames(error)), JSON.stringify(events)]) assert.equal(value.includes(secret), false);
+    return true;
+  };
+}
+
+for (const kind of ['unexpected member', 'traversal path']) {
+  test(`T15 remote ${kind} diagnostics never disclose credentials from staged or published archives`, async () => {
+    const input = await prepared();
+    const secret = `npm_${'z'.repeat(36)}`;
+    const files = new Map(input.verified.packageFiles);
+    if (kind === 'unexpected member') files.set(`${secret}.js`, Buffer.from('unexpected synthetic member'));
+    else {
+      files.delete('index.d.ts');
+      files.set(`../${secret}`, Buffer.from('synthetic traversal member'));
+    }
+    const tarball = gzipSync(ustar(files));
+    for (const existing of [false, true]) {
+      const staged = stagingFake(input, { tarball });
+      if (existing) staged.stageState.stages = [staged.stage];
+      await assert.rejects(staged.runStage(), safeRemoteRefusal('npm stage tarball archive is invalid', secret, staged.events));
+      assert.deepEqual(staged.writes, existing ? [] : ['npm.stage']);
+    }
+    for (const mode of ['publish', 'release-only']) {
+      const published = fakePorts(input);
+      const remote = { ...published.matching(), tarball, integrity: `sha512-${createHash('sha512').update(tarball).digest('base64')}` };
+      if (mode === 'release-only') published.state.package = remote;
+      else published.ports.npm.publish = async () => { published.writes.push('npm.publish'); published.state.package = remote; };
+      await assert.rejects(published.run(mode), safeRemoteRefusal('published npm tarball archive is invalid', secret, published.events));
+      assert.deepEqual(published.writes, mode === 'release-only' ? [] : ['npm.publish']);
+    }
+  });
+}
+
+test('T15 remote release asset names and conflicting bytes never enter diagnostics or events', async () => {
+  const input = await prepared();
+  const secret = `npm_${'z'.repeat(36)}`;
+  for (const [name, bytes, expected] of [[`${secret}.zip`, Buffer.from('unexpected asset'), 'unexpected remote release asset'], ['SHA256SUMS', Buffer.from(secret), 'conflicting remote release asset']]) {
+    for (const mode of ['stage-initial', 'publish', 'release-only']) {
+      const fake = mode === 'stage-initial' ? stagingFake(input, { tag: sourceCommit, release: {}, assets: [[name, bytes]] }) : fakePorts(input, { tag: sourceCommit, release: {}, assets: [[name, bytes]] });
+      if (mode === 'release-only') fake.state.package = fake.matching();
+      const result = mode === 'stage-initial' ? fake.runStage() : fake.run(mode);
+      await assert.rejects(result, safeRemoteRefusal(expected, secret, fake.events));
+      assert.deepEqual(fake.writes, []);
+    }
+  }
 });
