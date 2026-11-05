@@ -31,3 +31,5 @@ The package remains declarations and schemas with no runtime JavaScript, scripts
 Update the generated package, version record, changelog and release files together.
 Verify the generated package and ZIP, then publish reviewed main through the protected OIDC workflow.
 Keep existing versions, tags and release assets immutable.
+
+Derive the tar member cap from the exact approved inventory. Verify an actual twelve-member tarball and refusal of extra members. Catalog data remains immutable across compilation of authored source.
