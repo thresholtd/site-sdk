@@ -6,7 +6,7 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, mock, test } from 'node:test';
 import { gzipSync } from 'node:zlib';
-import { boundedDownload, createCliPorts, publishRelease, statementFromAudit, verifyAuditedProvenance, verifyProvenance, verifyRuntime } from '../scripts/publish.mjs';
+import { boundedDownload, createCliPorts, downloadStageTarball, npmFailureCode, publishRelease, stageInitial, statementFromAudit, verifyAuditedProvenance, verifyCliMode, verifyProvenance, verifyRuntime } from '../scripts/publish.mjs';
 import { canonicalJson, crc32, PACKAGE_FILES, parseStoreZip, verifyPackage } from '../scripts/verify-package.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -267,7 +267,7 @@ for (const operation of ['npm.publish', 'github.createTag', 'github.createReleas
   });
   test(`T10 stops when ${operation} failed before application`, async () => {
     const fake = fakePorts(await prepared(), { noApply: [operation] });
-    await assert.rejects(fake.run(), /absent or malformed|was not observed/);
+    await assert.rejects(fake.run(), /absent or malformed|was not observed|write failed: UNKNOWN/);
     assert.equal(fake.writes.at(-1), operation);
     assert.equal(fake.writes.filter(name => name === operation).length, 1);
   });
@@ -462,7 +462,7 @@ function workflowPolicy(source, bootstrap) {
   assert.ok(!/\b(?:npm ci|npm install|npm publish)\b/.test(source), 'workflow must use verified publication tooling');
   assert.ok(source.indexOf('node scripts/verify-package.mjs') < source.indexOf('node scripts/publish.mjs'), 'verification must precede publication');
   for (const line of source.split('\n').filter(line => /\bnode scripts\//.test(line))) assert.ok(!/\$\{\{/.test(line), 'untrusted workflow input must pass through environment variables');
-  if (bootstrap) assert.ok(source.includes('NPM_ACCESS_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}') && source.includes('test "$RELEASE_TAG" = "v2.0.0"'), 'bootstrap must bind the temporary token and initial version');
+  if (bootstrap) assert.ok(source.includes('NPM_ACCESS_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}') && source.includes('test "$RELEASE_TAG" = "v2.0.0"') && source.includes('node scripts/publish.mjs stage-initial --tag "$RELEASE_TAG"') && !source.includes('node scripts/publish.mjs publish --tag'), 'bootstrap must stage only the initial version with the temporary token');
   else assert.ok(!/NPM_ACCESS_TOKEN|NODE_AUTH_TOKEN|secrets\./.test(source), 'permanent publication must not read an npm token');
 }
 
@@ -678,4 +678,296 @@ test('T10 real GitHub write adapter uses immutable targets, notes files and uplo
   assert.equal(await readFile(join(boundary.scratch, 'release-notes.md'), 'utf8'), 'Synthetic reviewed source\n');
   assert.deepEqual(calls[2].args, ['release', 'upload', tag, join(boundary.scratch, 'SHA256SUMS'), '--repo', 'thresholtd/site-sdk']);
   assert.ok(!calls.some(call => call.args.includes('--clobber') || call.args.includes('--force')));
+});
+
+const stageId = '00000000-0000-4000-8000-000000000001';
+const differentStageId = '00000000-0000-4000-8000-000000000002';
+
+function stagingFake(input, options = {}) {
+  const fake = fakePorts(input, options);
+  const stage = { id: stageId, packageName: '@thresho/site-sdk', version: '2.0.0', tag: 'latest', access: 'public', shasum: createHash('sha1').update(options.tarball ?? input.tarball).digest('hex'), status: 'staged', ...options.stage };
+  const state = { stages: options.initial ?? [] };
+  fake.ports.npm.listStages = async () => {
+    fake.reads.push('npm.listStages');
+    if (options.listFailure === true || (options.listFailure === 'after' && fake.writes.includes('npm.stage'))) throw new Error('npm stage state read failed');
+    return state.stages;
+  };
+  fake.ports.npm.readStageTarball = async id => {
+    fake.reads.push('npm.readStageTarball');
+    assert.equal(id, stageId);
+    if (options.tarballFailure) throw new Error('npm stage tarball read failed');
+    return options.tarball ?? input.tarball;
+  };
+  fake.ports.npm.stagePublish = async path => {
+    assert.equal(path, input.tarballPath);
+    fake.writes.push('npm.stage');
+    if (!options.noApply) state.stages = options.after ?? [stage];
+    if (options.lost || options.noApply) throw options.writeError ?? new Error('synthetic lost stage response');
+    return options.response === undefined ? { stageId } : options.response;
+  };
+  const run = overrides => stageInitial({ root: input.root, tag, tarballPath: input.tarballPath, context: fake.context, ports: fake.ports, onEvent: event => fake.events.push(event), ...overrides });
+  return { ...fake, stage, stageState: state, runStage: run };
+}
+
+test('T12 stage-initial attributes a confirmed staged result without a GitHub write', async () => {
+  const input = await prepared();
+  const fake = stagingFake(input);
+  const result = await fake.runStage();
+  assert.deepEqual(result, { state: 'pending-approval', version: '2.0.0', stageId, sourceCommit, integrity: input.verified.integrity, approval: 'Owner approval with interactive npm 2FA is required for this exact stage.' });
+  assert.deepEqual(fake.writes, ['npm.stage']);
+  assert.equal(fake.reads.filter(operation => operation === 'npm.listStages').length, 2);
+  assert.equal(fake.reads.filter(operation => operation === 'npm.readStageTarball').length, 1);
+  assert.deepEqual(fake.events.map(event => event.status), ['attempt', 'observed']);
+});
+
+test('T12 validating stage is attributed as incomplete without an approval recommendation', async () => {
+  const fake = stagingFake(await prepared(), { stage: { status: 'validating' } });
+  const result = await fake.runStage();
+  assert.equal(result.state, 'observed-incomplete');
+  assert.equal(result.sourceCommit, sourceCommit);
+  assert.equal(Object.hasOwn(result, 'approval'), false);
+  assert.deepEqual(fake.writes, ['npm.stage']);
+});
+
+test('T12 existing identical stage never adopts the current source or recommends approval', async () => {
+  const input = await prepared();
+  const fake = stagingFake(input);
+  fake.stageState.stages = [{ ...fake.stage, sourceCommit: otherCommit }];
+  await assert.rejects(fake.runStage(), /existing npm stage is unattributed/);
+  assert.deepEqual(fake.writes, []);
+  assert.deepEqual(fake.events, []);
+  assert.ok(fake.reads.includes('npm.readStageTarball'));
+});
+
+test('T12 lost stage response verifies readback but refuses source attribution and approval', async () => {
+  const fake = stagingFake(await prepared(), { lost: true });
+  await assert.rejects(fake.runStage(), /observed npm stage is unattributed/);
+  assert.deepEqual(fake.writes, ['npm.stage']);
+  const unattributed = fake.events.find(event => event.status === 'unattributed');
+  assert.equal(unattributed.stageId, stageId);
+  assert.equal(Object.hasOwn(unattributed, 'sourceCommit'), false);
+  assert.equal(fake.events.some(event => event.status === 'observed'), false);
+  assert.ok(fake.reads.includes('npm.readStageTarball'));
+});
+
+for (const [name, change] of [
+  ['dirty source', context => { context.clean = false; }],
+  ['missing clean proof', context => { delete context.clean; }],
+  ['wrong SHA', context => { context.sha = otherCommit; }],
+  ['missing full HEAD', context => { context.head = 'short'; }],
+  ['wrong repository', context => { context.repository = 'other/site-sdk'; }],
+  ['local execution', context => { context.actions = 'false'; }],
+  ['wrong workflow', context => { context.workflowRef = 'thresholtd/site-sdk/.github/workflows/publish.yml@refs/heads/main'; }],
+  ['tag execution', context => { context.workflowRef = 'thresholtd/site-sdk/.github/workflows/bootstrap-publish.yml@refs/tags/v2.0.0'; context.ref = 'refs/tags/v2.0.0'; }],
+  ['nonmanual event', context => { context.event = 'push'; }],
+]) {
+  test(`T13 stage-initial refuses ${name} before vendor reads or writes`, async () => {
+    const fake = stagingFake(await prepared());
+    change(fake.context);
+    await assert.rejects(fake.runStage(), /checkout|GITHUB_SHA|workflow|bootstrap/);
+    assert.deepEqual(fake.writes, []);
+    assert.deepEqual(fake.reads, []);
+  });
+}
+
+test('T13 CLI refuses initial direct publication and staging another version before adapter creation', async () => {
+  const fake = stagingFake(await prepared());
+  assert.throws(() => verifyCliMode({ mode: 'publish', version: '2.0.0', tag, context: fake.context }), /requires stage-initial/);
+  assert.throws(() => verifyCliMode({ mode: 'stage-initial', version: '2.1.0', tag: 'v2.1.0', context: fake.context }), /only version 2.0.0/);
+  const source = await readFile(join(root, 'scripts/publish.mjs'), 'utf8');
+  const cli = source.slice(source.indexOf('async function main(args)'));
+  assert.ok(cli.indexOf('verifyCliMode({') < cli.indexOf('await mkdtemp'));
+  assert.ok(cli.indexOf('verifyCliMode({') < cli.indexOf('await createCliPorts'));
+  assert.deepEqual(fake.writes, []);
+});
+
+for (const [name, options, expected] of [
+  ['conflicting tag', { tag: otherCommit }, /another source commit/],
+  ['conflicting release', { tag: sourceCommit, release: { sourceCommit: otherCommit } }, /another source commit/],
+  ['failed stage list', { listFailure: true }, /state read failed/],
+  ['malformed inventory', { initial: {} }, /inventory is malformed/],
+  ['too many stages', { initial: Array.from({ length: 101 }, () => ({ version: '1.0.0' })) }, /exceeds its bound/],
+]) {
+  test(`T13 staging preflight refuses ${name}`, async () => {
+    const fake = stagingFake(await prepared(), options);
+    await assert.rejects(fake.runStage(), expected);
+    assert.deepEqual(fake.writes, []);
+  });
+}
+
+test('T13 staging refuses an already published version and failed absence reads', async () => {
+  const input = await prepared();
+  const existing = stagingFake(input);
+  existing.state.package = existing.matching();
+  await assert.rejects(existing.runStage(), /public npm version already exists/);
+  assert.deepEqual(existing.writes, []);
+  const unavailable = stagingFake(input, { failedRead: 'npm.readVersion' });
+  await assert.rejects(unavailable.runStage(), /read unavailable/);
+  assert.deepEqual(unavailable.writes, []);
+});
+
+for (const [name, metadata, expected] of [
+  ['invalid ID', { id: '../unsafe' }, /identity or metadata/],
+  ['wrong package', { packageName: '@other/site-sdk' }, /identity or metadata/],
+  ['wrong access', { access: 'private' }, /identity or metadata/],
+  ['wrong tag', { tag: 'next' }, /identity or metadata/],
+  ['malformed SHA-1', { shasum: 'x'.repeat(40) }, /identity or metadata/],
+  ['wrong SHA-1', { shasum: '0'.repeat(40) }, /SHA-1 differs/],
+  ['unknown status', { status: 'approved' }, /status is unknown/],
+]) {
+  test(`T13 stage readback refuses ${name}`, async () => {
+    const fake = stagingFake(await prepared(), { stage: metadata });
+    await assert.rejects(fake.runStage(), expected);
+    assert.deepEqual(fake.writes, ['npm.stage']);
+    assert.equal(fake.events.some(event => event.status === 'observed'), false);
+  });
+}
+
+test('T13 stage readback requires a single matching response ID and successful read', async () => {
+  const input = await prepared();
+  for (const options of [{ response: { stageId: differentStageId } }, { after: [] }, { listFailure: 'after' }, { tarballFailure: true }]) {
+    const fake = stagingFake(input, options);
+    await assert.rejects(fake.runStage(), /readback differs|write failed: UNKNOWN|state read failed|tarball read failed/);
+    assert.deepEqual(fake.writes, ['npm.stage']);
+  }
+  const duplicate = stagingFake(input);
+  duplicate.stageState.stages = [duplicate.stage, { ...duplicate.stage, id: differentStageId }];
+  await assert.rejects(duplicate.runStage(), /multiple npm stages/);
+  assert.deepEqual(duplicate.writes, []);
+});
+
+test('T13 stage tarball checks enforce member bytes, SHA-512 and the processing bound', async () => {
+  const input = await prepared();
+  const changedFiles = new Map(input.verified.packageFiles);
+  changedFiles.set('index.d.ts', Buffer.from('altered member'));
+  for (const [tarball, expected] of [[gzipSync(input.rawTar, { level: 1 }), /SHA-512 differs/], [gzipSync(ustar(changedFiles)), /differs from generated package/], [Buffer.alloc(1048577), /exceeds its bound/]]) {
+    const fake = stagingFake(input, { tarball });
+    await assert.rejects(fake.runStage(), expected);
+    assert.deepEqual(fake.writes, ['npm.stage']);
+    assert.equal(fake.events.some(event => event.status === 'observed'), false);
+  }
+});
+
+test('T13 stage ports and event recording are mandatory', async () => {
+  const fake = stagingFake(await prepared());
+  await assert.rejects(fake.runStage({ ports: {} }), /required npm stage port/);
+  await assert.rejects(fake.runStage({ ports: { npm: fake.ports.npm } }), /required GitHub stage preflight port/);
+  await assert.rejects(fake.runStage({ onEvent: undefined }), /event recorder/);
+  assert.deepEqual(fake.writes, []);
+});
+
+test('T13 a full stage page is permitted and malformed attribution responses remain unattributed', async () => {
+  const input = await prepared();
+  const full = stagingFake(input, { initial: Array.from({ length: 100 }, () => ({ version: '1.0.0' })) });
+  assert.equal((await full.runStage()).state, 'pending-approval');
+  for (const response of [null, {}, { stageId: 'unsafe' }]) {
+    const fake = stagingFake(input, { response });
+    await assert.rejects(fake.runStage(), /unattributed/);
+    assert.equal(fake.events.some(event => event.status === 'observed'), false);
+    assert.deepEqual(fake.writes, ['npm.stage']);
+  }
+  const duplicate = stagingFake(input);
+  duplicate.ports.npm.stagePublish = async () => { duplicate.writes.push('npm.stage'); duplicate.stageState.stages = [duplicate.stage, { ...duplicate.stage, id: differentStageId }]; return { stageId }; };
+  await assert.rejects(duplicate.runStage(), /multiple npm stages/);
+  assert.deepEqual(duplicate.writes, ['npm.stage']);
+});
+
+test('T14 real stage adapter uses exact list and publish arguments and retains only the response ID', async () => {
+  const response = { '@thresho/site-sdk': { name: '@thresho/site-sdk', version: '2.0.0', stageId, diagnostic: 'discard this field' } };
+  const boundary = await commandBoundary([{ tool: 'npm', prefix: ['stage', 'list'], stdout: '[]' }, { tool: 'npm', prefix: ['stage', 'publish'], stdout: JSON.stringify(response) }], { bootstrap: true });
+  assert.deepEqual(await boundary.ports.npm.listStages(), []);
+  const tarball = join(boundary.scratch, 'verified.tgz');
+  assert.deepEqual(await boundary.ports.npm.stagePublish(tarball), { stageId });
+  const calls = await boundary.calls();
+  assert.deepEqual(calls[0].args, ['stage', 'list', '@thresho/site-sdk', '--json', '--registry=https://registry.npmjs.org/', '--@thresho:registry=https://registry.npmjs.org/']);
+  assert.deepEqual(calls[1].args, ['stage', 'publish', tarball, '--access', 'public', '--tag', 'latest', '--provenance', '--ignore-scripts', '--json', '--registry=https://registry.npmjs.org/', '--@thresho:registry=https://registry.npmjs.org/']);
+  assert.ok(calls.every(call => call.hasAuthToken));
+  assert.ok(!calls.some(call => call.args.includes('download') || call.args.includes('approve') || call.args.includes('reject')));
+});
+
+test('T14 stage adapter refuses malformed JSON, multiple packages and absent response identity', async () => {
+  const secret = `npm_${'x'.repeat(36)}`;
+  for (const output of [secret, '{}', JSON.stringify({ '@thresho/site-sdk': { name: '@thresho/site-sdk', version: '2.0.0', stageId }, other: { stageId: differentStageId } }), JSON.stringify({ '@thresho/site-sdk': { name: '@thresho/site-sdk', version: '2.0.0', stageId: `${stageId}/${secret}` } })]) {
+    const boundary = await commandBoundary([{ tool: 'npm', prefix: ['stage', 'publish'], stdout: output }], { bootstrap: true });
+    await assert.rejects(boundary.ports.npm.stagePublish('/tmp/verified.tgz'), error => error.message === 'npm.stage write failed: UNKNOWN' && !JSON.stringify(error).includes(secret));
+  }
+  const failed = await commandBoundary([{ tool: 'npm', prefix: ['stage', 'list'], stdout: secret, stderr: secret, code: 1 }], { bootstrap: true });
+  await assert.rejects(failed.ports.npm.listStages(), error => error.message === 'npm stage state read failed' && !JSON.stringify(error).includes(secret));
+});
+
+test('T14 authenticated stage download uses only the validated fixed registry URL', async () => {
+  const boundary = await commandBoundary([], { bootstrap: true });
+  const requests = [];
+  mock.method(globalThis, 'fetch', async (url, options) => { requests.push({ url, options }); return new Response('bounded stage bytes'); });
+  assert.deepEqual(await boundary.ports.npm.readStageTarball(stageId), Buffer.from('bounded stage bytes'));
+  assert.equal(requests[0].url, `https://registry.npmjs.org/-/stage/${stageId}/tarball`);
+  assert.deepEqual(requests[0].options.headers, { Authorization: 'Bearer synthetic-test-token' });
+  assert.equal(requests[0].options.redirect, 'manual');
+  assert.ok(requests[0].options.signal instanceof AbortSignal);
+  for (const id of ['../other', `${stageId}?token=unsafe`, stageId.toUpperCase().replace('00000001', '0000000A')]) await assert.rejects(boundary.ports.npm.readStageTarball(id), /stage ID is invalid/);
+  assert.equal(requests.length, 1);
+});
+
+test('T14 stage download enforces the streaming limit at its exact bound', async () => {
+  mock.method(globalThis, 'fetch', async () => new Response(Buffer.alloc(1048576)));
+  assert.equal((await downloadStageTarball(stageId, 'synthetic-token')).length, 1048576);
+  mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream({ start(controller) { controller.enqueue(Buffer.alloc(524288)); controller.enqueue(Buffer.alloc(524288)); controller.enqueue(Buffer.alloc(1)); controller.close(); } })));
+  await assert.rejects(downloadStageTarball(stageId, 'synthetic-token'), /^Error: npm stage tarball read failed$/);
+  mock.method(globalThis, 'fetch', async () => new Response('x', { headers: { 'content-length': '1048577' } }));
+  await assert.rejects(downloadStageTarball(stageId, 'synthetic-token'), /^Error: npm stage tarball read failed$/);
+});
+
+test('T14 stage download refuses redirects, failed reads and timeout without credential text', async () => {
+  const secret = `npm_${'x'.repeat(36)}`;
+  let calls = 0;
+  for (const status of [301, 302, 307, 308, 401, 404, 503]) {
+    mock.method(globalThis, 'fetch', async () => { calls += 1; return new Response(null, { status, headers: { location: `https://other.invalid/${secret}` } }); });
+    await assert.rejects(downloadStageTarball(stageId, secret), error => error.message === 'npm stage tarball read failed' && !JSON.stringify(error).includes(secret));
+  }
+  assert.equal(calls, 7);
+  mock.method(globalThis, 'fetch', async () => { throw new Error(`connection failed ${secret}`); });
+  await assert.rejects(downloadStageTarball(stageId, secret), /^Error: npm stage tarball read failed$/);
+  mock.method(AbortSignal, 'timeout', milliseconds => { assert.equal(milliseconds, 30000); return AbortSignal.abort(new Error(`timeout ${secret}`)); });
+  mock.method(globalThis, 'fetch', async (url, options) => { assert.ok(options.signal.aborted); throw options.signal.reason; });
+  await assert.rejects(downloadStageTarball(stageId, secret), /^Error: npm stage tarball read failed$/);
+});
+
+test('T15 npm diagnostics accept only exact allowlisted JSON codes or npm code lines', () => {
+  const secret = `npm_${'x'.repeat(36)}`;
+  for (const code of ['EOTP', 'E401', 'E403', 'E404', 'E_STAGE_REQUIRED', 'EPRIVATE', 'EPUBLISHCONFLICT', 'EUSAGE']) {
+    assert.equal(npmFailureCode({ stdout: JSON.stringify({ error: { code, message: secret }, token: secret }) }), code);
+    assert.equal(npmFailureCode({ stderr: `${secret}\nnpm error code ${code}\nhttps://other.invalid/${secret}` }), code);
+  }
+  for (const error of [{ code: 'EOTP', message: secret }, { stdout: JSON.stringify({ error: { code: `EOTP ${secret}` } }) }, { stderr: `npm error code EOTP ${secret}` }, { stdout: `message EOTP ${secret}` }, { stdout: JSON.stringify({ error: { code: 'UNKNOWN_VENDOR_CODE' }, token: secret }) }]) assert.equal(npmFailureCode(error), 'UNKNOWN');
+});
+
+test('T15 failed unobserved stage and direct publish writes retain only a safe refusal code', async () => {
+  const input = await prepared();
+  const secret = `npm_${'x'.repeat(36)}`;
+  const writeError = Object.assign(new Error(secret), { stdout: JSON.stringify({ error: { code: 'EOTP', message: secret }, url: `https://other.invalid/${secret}` }), stderr: secret });
+  const staged = stagingFake(input, { noApply: true, writeError });
+  await assert.rejects(staged.runStage(), error => error.message === 'npm.stage write failed: EOTP' && !JSON.stringify(error).includes(secret));
+  assert.deepEqual(staged.writes, ['npm.stage']);
+  const direct = fakePorts(input);
+  direct.ports.npm.publish = async () => { direct.writes.push('npm.publish'); throw writeError; };
+  await assert.rejects(direct.run(), error => error.message === 'npm.publish write failed: EOTP' && !JSON.stringify(error).includes(secret));
+  assert.deepEqual(direct.writes, ['npm.publish']);
+  assert.ok(!JSON.stringify([...staged.events, ...direct.events]).includes(secret));
+});
+
+test('T15 actual stage and publish command adapters discard every unapproved diagnostic field', async () => {
+  const secret = `npm_${'x'.repeat(36)}`;
+  for (const operation of ['stage', 'publish']) {
+    const boundary = await commandBoundary([{ tool: 'npm', prefix: [operation], stdout: JSON.stringify({ error: { code: 'E403', message: secret }, token: secret }), stderr: secret, code: 1 }], { bootstrap: true });
+    const write = operation === 'stage' ? boundary.ports.npm.stagePublish : boundary.ports.npm.publish;
+    await assert.rejects(write('/tmp/verified.tgz'), error => error.message === `npm.${operation} write failed: E403` && !JSON.stringify(error).includes(secret) && !error.stack.includes(secret));
+  }
+});
+
+test('T15 vendor JSON parse errors never repeat credential text', async () => {
+  const secret = `npm_${'x'.repeat(36)}`;
+  const audit = await commandBoundary([npmRule('install', ''), npmRule('audit', `not JSON ${secret}`)]);
+  await assert.rejects(audit.ports.npm.verifySignatures('2.0.0'), error => error.message === 'npm signature audit response is malformed' && !JSON.stringify(error).includes(secret));
+  const github = await commandBoundary([{ tool: 'gh', prefix: ['api', '--include'], stdout: `HTTP/2.0 200 OK\r\n\r\nnot JSON ${secret}` }]);
+  await assert.rejects(github.ports.github.readTag(tag), error => error.message === 'GitHub state response is malformed' && !JSON.stringify(error).includes(secret));
 });
