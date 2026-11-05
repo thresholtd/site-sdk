@@ -1,6 +1,6 @@
 {
   "name": "@thresho/site-sdk",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -21,12 +21,14 @@
     "./tsconfig.json": "./tsconfig.json",
     "./schema/manifest.schema.json": "./schema/manifest.schema.json",
     "./schema/source.schema.json": "./schema/source.schema.json",
-    "./vocabulary.json": "./vocabulary.json"
+    "./vocabulary.json": "./vocabulary.json",
+    "./diagnostics.json": "./diagnostics.json"
   },
   "files": [
     "CHANGELOG.md",
     "LICENSE",
     "README.md",
+    "diagnostics.json",
     "index.d.ts",
     "jsx-dev-runtime.d.ts",
     "jsx-runtime.d.ts",
@@ -38,6 +40,6 @@
   "thresho": {
     "formatVersion": 2,
     "compilerVersion": "site-source-compiler/10",
-    "vocabularyDigest": "288e401dfa7080e62d12f5dce773cb2bbc264efe286b3cc81bf2474143560992"
+    "vocabularyDigest": "c39d5c38e77cd041167eb953514c6de5c6b3acf8d6450a226db5d7494e76e638"
   }
 }
