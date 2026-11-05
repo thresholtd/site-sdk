@@ -701,8 +701,8 @@ function stagingFake(input, options = {}) {
   fake.ports.npm.stagePublish = async path => {
     assert.equal(path, input.tarballPath);
     fake.writes.push('npm.stage');
-    if (!options.noApply) state.stages = options.after ?? [stage];
-    if (options.lost || options.noApply) throw options.writeError ?? new Error('synthetic lost stage response');
+    if (!options.stageWriteAbsent) state.stages = options.after ?? [stage];
+    if (options.stageResponseLost || options.stageWriteAbsent) throw options.writeError ?? new Error('synthetic lost stage response');
     return options.response === undefined ? { stageId } : options.response;
   };
   const run = overrides => stageInitial({ root: input.root, tag, tarballPath: input.tarballPath, context: fake.context, ports: fake.ports, onEvent: event => fake.events.push(event), ...overrides });
@@ -740,7 +740,7 @@ test('T12 existing identical stage never adopts the current source or recommends
 });
 
 test('T12 lost stage response verifies readback but refuses source attribution and approval', async () => {
-  const fake = stagingFake(await prepared(), { lost: true });
+  const fake = stagingFake(await prepared(), { stageResponseLost: true });
   await assert.rejects(fake.runStage(), /observed npm stage is unattributed/);
   assert.deepEqual(fake.writes, ['npm.stage']);
   const unattributed = fake.events.find(event => event.status === 'unattributed');
@@ -945,7 +945,7 @@ test('T15 failed unobserved stage and direct publish writes retain only a safe r
   const input = await prepared();
   const secret = `npm_${'x'.repeat(36)}`;
   const writeError = Object.assign(new Error(secret), { stdout: JSON.stringify({ error: { code: 'EOTP', message: secret }, url: `https://other.invalid/${secret}` }), stderr: secret });
-  const staged = stagingFake(input, { noApply: true, writeError });
+  const staged = stagingFake(input, { stageWriteAbsent: true, writeError });
   await assert.rejects(staged.runStage(), error => error.message === 'npm.stage write failed: EOTP' && !JSON.stringify(error).includes(secret));
   assert.deepEqual(staged.writes, ['npm.stage']);
   const direct = fakePorts(input);
