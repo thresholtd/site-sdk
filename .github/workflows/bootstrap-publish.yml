@@ -49,7 +49,7 @@ jobs:
         run: |
           test "$RELEASE_TAG" = "v2.0.0"
           node scripts/verify-package.mjs --tag "$RELEASE_TAG"
-      - name: Publish initial immutable artifacts
+      - name: Stage the initial package for owner approval
         env:
           NPM_ACCESS_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
-        run: node scripts/publish.mjs publish --tag "$RELEASE_TAG"
+        run: node scripts/publish.mjs stage-initial --tag "$RELEASE_TAG"

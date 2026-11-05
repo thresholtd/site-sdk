@@ -12,10 +12,16 @@ const repository = 'thresholtd/site-sdk';
 const repositoryUrl = `https://github.com/${repository}`;
 const registry = 'https://registry.npmjs.org';
 const shaPattern = /^[a-f0-9]{40}$/;
+const stageIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const npmRefusalCodes = new Set(['EOTP', 'E401', 'E403', 'E404', 'E_STAGE_REQUIRED', 'EPRIVATE', 'EPUBLISHCONFLICT', 'EUSAGE']);
 const workflowPath = version => version === '2.0.0' ? '.github/workflows/bootstrap-publish.yml' : '.github/workflows/publish.yml';
 const requireThat = (condition, message) => { if (!condition) throw new Error(message); };
 const sha512 = bytes => createHash('sha512').update(bytes).digest('hex');
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+function parseVendorJson(value, label) {
+  try { return JSON.parse(value); } catch { throw new Error(`${label} is malformed`); }
+}
 
 function canonicalBase64(value, limit, label) {
   requireThat(typeof value === 'string' && value.length > 0 && value.length <= 4 * Math.ceil(limit / 3) && value.length % 4 === 0 && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value), `${label} must use bounded canonical base64`);
@@ -91,7 +97,7 @@ export function verifyAuditedProvenance(audited, expected) {
   const { statement, bundle } = audited;
   verifyProvenance(statement, expected);
   const payload = canonicalBase64(bundle.dsseEnvelope?.payload, 1048576, 'audited statement');
-  requireThat(canonicalJson(JSON.parse(utf8.decode(payload))) === canonicalJson(statement), 'audited statement differs from its signed bundle');
+  requireThat(canonicalJson(parseVendorJson(utf8.decode(payload), 'audited provenance statement')) === canonicalJson(statement), 'audited statement differs from its signed bundle');
   const material = bundle.verificationMaterial;
   requireThat(bundle.mediaType === 'application/vnd.dev.sigstore.bundle.v0.3+json' && material && !Object.hasOwn(material, 'publicKey') && !Object.hasOwn(material, 'x509CertificateChain') && material.certificate && Object.keys(material.certificate).length === 1 && Object.hasOwn(material.certificate, 'rawBytes'), 'audited bundle must use the approved single-certificate v0.3 profile');
   const bytes = canonicalBase64(material.certificate.rawBytes, 16384, 'signing certificate');
@@ -132,6 +138,98 @@ export function verifyProvenance(statement, { version, tag, sourceCommit, tarbal
   requireThat(new RegExp(`^https://github\\.com/${repository}/actions/runs/[1-9][0-9]*/attempts/[1-9][0-9]*$`).test(statement.predicate.runDetails.metadata?.invocationId ?? ''), 'provenance invocation identity is invalid');
 }
 
+class NpmWriteRefusal extends Error {
+  constructor(operation, code) {
+    const safeCode = npmRefusalCodes.has(code) ? code : 'UNKNOWN';
+    super(`${operation} write failed: ${safeCode}`);
+    this.npmCode = safeCode;
+  }
+}
+
+export function npmFailureCode(error) {
+  if (error instanceof NpmWriteRefusal) return error.npmCode;
+  for (const output of [error?.stdout, error?.stderr]) {
+    if (typeof output !== 'string') continue;
+    try {
+      const code = JSON.parse(output).error?.code;
+      if (npmRefusalCodes.has(code)) return code;
+    } catch { continue; }
+  }
+  for (const output of [error?.stdout, error?.stderr]) {
+    if (typeof output !== 'string') continue;
+    for (const line of output.split(/\r?\n/)) {
+      const match = /^npm error code ([A-Z0-9_]+)$/.exec(line);
+      if (match && npmRefusalCodes.has(match[1])) return match[1];
+    }
+  }
+  return 'UNKNOWN';
+}
+
+function verifyPublishContext(context, version, tag) {
+  requireThat(context?.actions === 'true' && context.repository === repository && shaPattern.test(context.sha ?? '') && context.head === context.sha, 'publish checkout does not match GITHUB_SHA in the approved repository');
+  const expectedWorkflow = `${repository}/${workflowPath(version)}@`;
+  requireThat(typeof context.workflowRef === 'string' && context.workflowRef.startsWith(expectedWorkflow), 'publish workflow identity differs from the fixed public path');
+  const ref = context.workflowRef.slice(expectedWorkflow.length);
+  requireThat(ref === 'refs/heads/main' || ref === `refs/tags/${tag}`, 'publish workflow ref is not main or the exact version tag');
+  requireThat(context.ref === ref && ['workflow_dispatch', 'push'].includes(context.event), 'publish event/ref context is inconsistent');
+  if (version === '2.0.0') requireThat(context.event === 'workflow_dispatch' && context.ref === 'refs/heads/main', 'bootstrap publish requires a manual dispatch on public main');
+}
+
+export function verifyCliMode({ mode, version, tag, context }) {
+  requireThat(mode !== 'publish' || version !== '2.0.0', 'version 2.0.0 requires stage-initial instead of direct bootstrap publish');
+  if (mode === 'stage-initial') requireThat(version === '2.0.0' && tag === 'v2.0.0', 'stage-initial permits only version 2.0.0');
+  if (mode !== 'release-only') verifyPublishContext(context, version, tag);
+}
+
+async function observedStages(ports, verified) {
+  const listed = await ports.npm.listStages();
+  requireThat(Array.isArray(listed) && listed.length <= 100 && listed.every(item => item && typeof item === 'object' && typeof item.version === 'string'), 'npm stage inventory is malformed or exceeds its bound');
+  const candidates = listed.filter(item => item.version === verified.packageJson.version);
+  requireThat(candidates.length <= 1, 'multiple npm stages exist for the initial version');
+  const observed = [];
+  for (const item of candidates) {
+    requireThat(typeof item.id === 'string' && stageIdPattern.test(item.id) && item.packageName === '@thresho/site-sdk' && item.tag === 'latest' && item.access === 'public' && typeof item.shasum === 'string' && shaPattern.test(item.shasum), 'npm stage identity or metadata is invalid');
+    requireThat(item.status === 'staged' || item.status === 'validating', 'npm stage status is unknown');
+    const bytes = await ports.npm.readStageTarball(item.id);
+    requireThat(Buffer.isBuffer(bytes) && bytes.length <= 1048576, 'npm stage tarball exceeds its bound');
+    requireThat(createHash('sha1').update(bytes).digest('hex') === item.shasum, 'npm stage SHA-1 differs from its tarball');
+    requireThat(verifyRemoteTarball(bytes, verified.packageFiles, 'npm stage tarball') === verified.integrity, 'npm stage SHA-512 differs from the verified local tarball');
+    observed.push({ stageId: item.id, status: item.status });
+  }
+  return observed;
+}
+
+export async function stageInitial({ root, tag, tarballPath, context, ports, onEvent } = {}) {
+  for (const method of ['readVersion', 'listStages', 'readStageTarball', 'stagePublish']) requireThat(typeof ports?.npm?.[method] === 'function', `required npm stage port is missing: ${method}`);
+  for (const method of ['readTag', 'readRelease', 'readAsset']) requireThat(typeof ports?.github?.[method] === 'function', `required GitHub stage preflight port is missing: ${method}`);
+  requireThat(typeof onEvent === 'function', 'required publication event recorder is missing');
+  requireThat(typeof context?.head === 'string' && shaPattern.test(context.head) && context.clean === true, 'staging checkout must be clean at a full reviewed source commit');
+  const verified = await verifyPackage({ root, tag, tarballPath });
+  requireThat(verified.tarball && verified.integrity, 'a verified local npm tarball is required');
+  verifyCliMode({ mode: 'stage-initial', version: verified.packageJson.version, tag, context });
+  const sourceCommit = context.head;
+  const version = verified.packageJson.version;
+  await inspectGithub(ports, { tag, sourceCommit, assets: new Map([[verified.manifest.fileName, verified.zip], ['SHA256SUMS', verified.checksum]]) });
+  requireThat(await ports.npm.readVersion(version) === null, 'public npm version already exists; use release-only recovery');
+  requireThat((await observedStages(ports, verified)).length === 0, 'existing npm stage is unattributed; prior trusted workflow evidence is required');
+  onEvent({ operation: 'npm.stage', status: 'attempt', version, sourceCommit });
+  let response;
+  let refusalCode = 'UNKNOWN';
+  try { response = await ports.npm.stagePublish(tarballPath); } catch (error) { refusalCode = npmFailureCode(error); }
+  const observed = await observedStages(ports, verified);
+  if (observed.length === 0) throw new NpmWriteRefusal('npm.stage', refusalCode);
+  const stage = observed[0];
+  if (!response || typeof response.stageId !== 'string' || !stageIdPattern.test(response.stageId)) {
+    onEvent({ operation: 'npm.stage', status: 'unattributed', version, stageId: stage.stageId, integrity: verified.integrity });
+    throw new Error('observed npm stage is unattributed; a confirmed write response and prior trusted workflow evidence are required');
+  }
+  requireThat(response.stageId === stage.stageId, 'npm stage readback differs from the confirmed write response');
+  onEvent({ operation: 'npm.stage', status: 'observed', version, stageId: stage.stageId, sourceCommit, integrity: verified.integrity, stageStatus: stage.status });
+  const result = { state: stage.status === 'staged' ? 'pending-approval' : 'observed-incomplete', version, stageId: stage.stageId, sourceCommit, integrity: verified.integrity };
+  if (stage.status === 'staged') result.approval = 'Owner approval with interactive npm 2FA is required for this exact stage.';
+  return result;
+}
+
 function validatePorts(ports, onEvent) {
   for (const method of ['readVersion', 'publish', 'verifySignatures']) requireThat(typeof ports?.npm?.[method] === 'function', `required npm port is missing: ${method}`);
   for (const method of ['readTag', 'readRelease', 'readAsset', 'createTag', 'createRelease', 'uploadAsset']) requireThat(typeof ports?.github?.[method] === 'function', `required GitHub port is missing: ${method}`);
@@ -146,18 +244,23 @@ async function inspectGithub(ports, { tag, sourceCommit, assets }) {
     requireThat(remoteTag !== null && release.tagName === tag && release.sourceCommit === sourceCommit, 'remote release belongs to another source commit');
     requireThat(Array.isArray(release.assets) && release.assets.every(asset => asset && typeof asset.name === 'string') && new Set(release.assets.map(asset => asset.name)).size === release.assets.length, 'release asset inventory is invalid');
     for (const asset of release.assets) {
-      requireThat(assets.has(asset.name), `unexpected remote release asset: ${asset.name}`);
+      requireThat(assets.has(asset.name), 'unexpected remote release asset');
       const bytes = await ports.github.readAsset(release, asset.name);
-      requireThat(Buffer.isBuffer(bytes) && bytes.equals(assets.get(asset.name)), `conflicting remote release asset: ${asset.name}`);
+      requireThat(Buffer.isBuffer(bytes) && bytes.equals(assets.get(asset.name)), 'conflicting remote release asset');
     }
   }
   return { remoteTag, release };
 }
 
+function verifyRemoteTarball(bytes, packageFiles, label) {
+  try { return verifyTarball(bytes, packageFiles); }
+  catch { throw new Error(`${label} archive is invalid`); }
+}
+
 async function matchingPackage(ports, verified, sourceCommit, tag, current) {
   const remote = current === undefined ? await ports.npm.readVersion(verified.packageJson.version) : current;
   requireThat(remote !== null && remote.name === verified.packageJson.name && remote.version === verified.packageJson.version && typeof remote.integrity === 'string' && Buffer.isBuffer(remote.tarball), 'published npm version is absent or malformed');
-  requireThat(verifyTarball(remote.tarball, verified.packageFiles) === remote.integrity, 'published npm tarball bytes or integrity differ from the verified source');
+  requireThat(verifyRemoteTarball(remote.tarball, verified.packageFiles, 'published npm tarball') === remote.integrity, 'published npm tarball bytes or integrity differ from the verified source');
   const audited = await ports.npm.verifySignatures(verified.packageJson.version);
   verifyAuditedProvenance(audited, { version: verified.packageJson.version, tag, sourceCommit, tarball: remote.tarball });
   return remote;
@@ -172,13 +275,7 @@ export async function publishRelease({ mode, root, tag, tarballPath, sourceCommi
   requireThat(verified.tarball && verified.integrity, 'a verified local npm tarball is required');
   let observedPackage;
   if (mode === 'publish') {
-    requireThat(context.actions === 'true' && context.repository === repository && shaPattern.test(context.sha ?? '') && context.head === context.sha, 'publish checkout does not match GITHUB_SHA in the approved repository');
-    const expectedWorkflow = `${repository}/${workflowPath(verified.packageJson.version)}@`;
-    requireThat(typeof context.workflowRef === 'string' && context.workflowRef.startsWith(expectedWorkflow), 'publish workflow identity differs from the fixed public path');
-    const workflowRef = context.workflowRef.slice(expectedWorkflow.length);
-    requireThat(workflowRef === 'refs/heads/main' || workflowRef === `refs/tags/${tag}`, 'publish workflow ref is not main or the exact version tag');
-    requireThat(context.ref === workflowRef && ['workflow_dispatch', 'push'].includes(context.event), 'publish event/ref context is inconsistent');
-    if (verified.packageJson.version === '2.0.0') requireThat(context.event === 'workflow_dispatch' && context.ref === 'refs/heads/main', 'bootstrap publish requires a manual dispatch on public main');
+    verifyPublishContext(context, verified.packageJson.version, tag);
     sourceCommit = context.head;
   } else {
     requireThat(shaPattern.test(sourceCommit ?? '') && context.head === sourceCommit, 'release-only checkout must equal the explicit source commit');
@@ -191,8 +288,11 @@ export async function publishRelease({ mode, root, tag, tarballPath, sourceCommi
     requireThat(current === null, 'npm version already exists; use explicit release-only recovery');
     onEvent({ operation: 'npm.publish', status: 'attempt', version: verified.packageJson.version, sourceCommit });
     let received = true;
-    try { await ports.npm.publish(tarballPath); } catch { received = false; }
-    observedPackage = await matchingPackage(ports, verified, sourceCommit, tag);
+    let refusalCode = 'UNKNOWN';
+    try { await ports.npm.publish(tarballPath); } catch (error) { received = false; refusalCode = npmFailureCode(error); }
+    const published = await ports.npm.readVersion(verified.packageJson.version);
+    if (published === null && !received) throw new NpmWriteRefusal('npm.publish', refusalCode);
+    observedPackage = await matchingPackage(ports, verified, sourceCommit, tag, published);
     onEvent({ operation: 'npm.publish', status: 'observed', responseReceived: received, version: verified.packageJson.version, integrity: observedPackage.integrity, sourceCommit });
   } else {
     observedPackage = await matchingPackage(ports, verified, sourceCommit, tag, current);
@@ -265,6 +365,31 @@ export async function boundedDownload(value, limit, { github = false } = {}) {
   throw new Error('public asset redirect limit exceeded');
 }
 
+export async function downloadStageTarball(stageId, token) {
+  requireThat(typeof stageId === 'string' && stageIdPattern.test(stageId), 'npm stage ID is invalid');
+  requireThat(typeof token === 'string' && token.length > 0, 'bootstrap token is required for the staged tarball read');
+  try {
+    const response = await fetch(`${registry}/-/stage/${stageId}/tarball`, { headers: { Authorization: `Bearer ${token}` }, redirect: 'manual', signal: AbortSignal.timeout(30000) });
+    if (response.status !== 200 || !response.body) {
+      await response.body?.cancel();
+      throw new Error('npm stage tarball response failed');
+    }
+    const length = response.headers.get('content-length');
+    if (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > 1048576)) {
+      await response.body.cancel();
+      throw new Error('npm stage tarball exceeds its download bound');
+    }
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of response.body) {
+      size += chunk.length;
+      requireThat(size <= 1048576, 'npm stage tarball exceeds its download bound');
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+  } catch { throw new Error('npm stage tarball read failed'); }
+}
+
 function npm404(error) {
   for (const output of [error.stdout, error.stderr]) {
     try { if (JSON.parse(output).error?.code === 'E404') return true; } catch { continue; }
@@ -281,7 +406,7 @@ async function ghRead(path, env) {
   }
   const split = output.search(/\r?\n\r?\n/);
   requireThat(split >= 0 && /^HTTP\/\S+\s+200(?:\s|$)/.test(output), 'GitHub state response is malformed');
-  return JSON.parse(output.slice(split).trim());
+  return parseVendorJson(output.slice(split).trim(), 'GitHub state response');
 }
 
 export function statementFromAudit(report, version) {
@@ -290,7 +415,7 @@ export function statementFromAudit(report, version) {
   requireThat(packages.length === 1 && Array.isArray(packages[0].attestationBundles), 'npm did not verify the exact package provenance');
   const bundles = packages[0].attestationBundles.filter(item => item.predicateType === 'https://slsa.dev/provenance/v1');
   requireThat(bundles.length === 1 && typeof bundles[0].bundle?.dsseEnvelope?.payload === 'string', 'npm did not verify one supported provenance bundle');
-  const statement = JSON.parse(utf8.decode(canonicalBase64(bundles[0].bundle.dsseEnvelope.payload, 1048576, 'audited statement')));
+  const statement = parseVendorJson(utf8.decode(canonicalBase64(bundles[0].bundle.dsseEnvelope.payload, 1048576, 'audited statement')), 'audited provenance statement');
   if (bundles[0].statement !== undefined) requireThat(canonicalJson(statement) === canonicalJson(bundles[0].statement), 'audited provenance statement differs from its signed bundle');
   return { statement, bundle: bundles[0].bundle };
 }
@@ -325,7 +450,7 @@ export async function createCliPorts({ root, scratch, bootstrap, env = process.e
       const release = await ghRead(`${api}/releases/tags/${encodeURIComponent(tag)}`, env);
       if (release === null) return null;
       requireThat(Number.isSafeInteger(release.id) && release.id > 0 && !release.draft && !release.prerelease && release.tag_name === tag && shaPattern.test(release.target_commitish ?? ''), 'GitHub release identity is malformed');
-      const pages = JSON.parse((await command('gh', ['api', '--paginate', '--slurp', `${api}/releases/${release.id}/assets?per_page=100`], { env })).stdout);
+      const pages = parseVendorJson((await command('gh', ['api', '--paginate', '--slurp', `${api}/releases/${release.id}/assets?per_page=100`], { env })).stdout, 'GitHub asset inventory');
       requireThat(Array.isArray(pages) && pages.every(Array.isArray), 'GitHub asset inventory is malformed');
       return { id: release.id, tagName: release.tag_name, sourceCommit: release.target_commitish, assets: pages.flat().map(asset => ({ name: asset.name, downloadUrl: asset.browser_download_url })) };
     },
@@ -355,13 +480,32 @@ export async function createCliPorts({ root, scratch, bootstrap, env = process.e
       const tarball = await boundedDownload(manifest.dist.tarball, 1048576);
       return { name: manifest.name, version, integrity: manifest.dist.integrity, tarball };
     },
-    async publish(tarballPath) { await command('npm', ['publish', tarballPath, '--access', 'public', '--provenance', '--ignore-scripts', ...npmArgs], { cwd: root, env: npmEnv }); },
+    async publish(tarballPath) {
+      try { await command('npm', ['publish', tarballPath, '--access', 'public', '--provenance', '--ignore-scripts', ...npmArgs], { cwd: root, env: npmEnv }); }
+      catch (error) { throw new NpmWriteRefusal('npm.publish', npmFailureCode(error)); }
+    },
+    async listStages() {
+      try { return JSON.parse((await command('npm', ['stage', 'list', '@thresho/site-sdk', '--json', ...npmArgs], { cwd: root, env: npmEnv })).stdout); }
+      catch { throw new Error('npm stage state read failed'); }
+    },
+    async readStageTarball(stageId) { return downloadStageTarball(stageId, bootstrap ? env.NPM_ACCESS_TOKEN : undefined); },
+    async stagePublish(tarballPath) {
+      let output;
+      try { output = (await command('npm', ['stage', 'publish', tarballPath, '--access', 'public', '--tag', 'latest', '--provenance', '--ignore-scripts', '--json', ...npmArgs], { cwd: root, env: npmEnv })).stdout; }
+      catch (error) { throw new NpmWriteRefusal('npm.stage', npmFailureCode(error)); }
+      try {
+        const parsed = JSON.parse(output);
+        const item = parsed?.['@thresho/site-sdk'];
+        requireThat(parsed && !Array.isArray(parsed) && Object.keys(parsed).length === 1 && item?.name === '@thresho/site-sdk' && item.version === '2.0.0' && typeof item.stageId === 'string' && stageIdPattern.test(item.stageId), 'stage response is invalid');
+        return { stageId: item.stageId };
+      } catch { throw new NpmWriteRefusal('npm.stage', 'UNKNOWN'); }
+    },
     async verifySignatures(version) {
       const auditPath = await mkdtemp(join(tmpdir(), 'site-sdk-signatures-'));
       try {
         await writeFile(join(auditPath, 'package.json'), JSON.stringify({ name: 'site-sdk-provenance-check', version: '1.0.0', private: true }));
         await command('npm', ['install', `@thresho/site-sdk@${version}`, '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...npmArgs], { cwd: auditPath, env: npmEnv });
-        const report = JSON.parse((await command('npm', ['audit', 'signatures', '--json', '--include-attestations', ...npmArgs], { cwd: auditPath, env: npmEnv })).stdout);
+        const report = parseVendorJson((await command('npm', ['audit', 'signatures', '--json', '--include-attestations', ...npmArgs], { cwd: auditPath, env: npmEnv })).stdout, 'npm signature audit response');
         return statementFromAudit(report, version);
       } finally { await rm(auditPath, { recursive: true, force: true }); }
     },
@@ -373,10 +517,10 @@ async function main(args) {
   const mode = args.shift();
   const options = {};
   for (let index = 0; index < args.length; index += 2) {
-    requireThat(['--tag', '--source-commit'].includes(args[index]) && args[index + 1] && !Object.hasOwn(options, args[index]), 'usage: node scripts/publish.mjs <publish|release-only> --tag v<version> [--source-commit <sha>]');
+    requireThat(['--tag', '--source-commit'].includes(args[index]) && args[index + 1] && !Object.hasOwn(options, args[index]), 'usage: node scripts/publish.mjs <publish|stage-initial|release-only> --tag v<version> [--source-commit <sha>]');
     options[args[index]] = args[index + 1];
   }
-  requireThat(['publish', 'release-only'].includes(mode) && options['--tag'], 'publication mode and --tag are required');
+  requireThat(['publish', 'stage-initial', 'release-only'].includes(mode) && options['--tag'], 'publication mode and --tag are required');
   requireThat(mode === 'release-only' ? shaPattern.test(options['--source-commit'] ?? '') : options['--source-commit'] === undefined, 'source commit is required only in release-only mode');
   const root = resolve(fileURLToPath(new URL('../', import.meta.url)));
   const head = (await command('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim();
@@ -385,16 +529,14 @@ async function main(args) {
   requireThat(clean, 'publication checkout must be clean at the reviewed source commit');
   verifyRuntime({ nodeVersion: process.version, npmVersion: (await command('npm', ['--version'])).stdout.trim() });
   const verified = await verifyPackage({ root, tag: options['--tag'] });
-  if (mode === 'publish') {
-    const prefix = `${repository}/${workflowPath(verified.packageJson.version)}@`;
-    requireThat(context.workflowRef?.startsWith(prefix) && context.actions === 'true' && context.repository === repository && context.sha === head, 'publication requires the approved GitHub workflow checkout');
-  }
+  verifyCliMode({ mode, version: verified.packageJson.version, tag: options['--tag'], context });
   const scratch = await mkdtemp(join(tmpdir(), 'site-sdk-publication-'));
   try {
-    const packed = JSON.parse((await command('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', scratch], { cwd: root })).stdout);
+    const packed = parseVendorJson((await command('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', scratch], { cwd: root })).stdout, 'npm pack response');
     requireThat(Array.isArray(packed) && packed.length === 1 && /^thresho-site-sdk-[0-9.]+\.tgz$/.test(packed[0].filename), 'npm pack returned an unexpected tarball');
-    const ports = await createCliPorts({ root, scratch, bootstrap: mode === 'publish' && context.workflowRef?.startsWith(`${repository}/.github/workflows/bootstrap-publish.yml@`) });
-    const result = await publishRelease({ mode, root, tag: options['--tag'], tarballPath: join(scratch, packed[0].filename), sourceCommit: options['--source-commit'], context, ports, onEvent: event => process.stdout.write(`${JSON.stringify(event)}\n`) });
+    const ports = await createCliPorts({ root, scratch, bootstrap: mode === 'stage-initial' });
+    const input = { mode, root, tag: options['--tag'], tarballPath: join(scratch, packed[0].filename), sourceCommit: options['--source-commit'], context, ports, onEvent: event => process.stdout.write(`${JSON.stringify(event)}\n`) };
+    const result = mode === 'stage-initial' ? await stageInitial(input) : await publishRelease(input);
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }
