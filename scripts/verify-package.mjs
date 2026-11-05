@@ -4,7 +4,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
-export const PACKAGE_FILES = Object.freeze(['package.json', 'index.d.ts', 'jsx-runtime.d.ts', 'jsx-dev-runtime.d.ts', 'tsconfig.json', 'vocabulary.json', 'schema/manifest.schema.json', 'schema/source.schema.json', 'README.md', 'CHANGELOG.md', 'LICENSE']);
+export const PACKAGE_FILES = Object.freeze(['package.json', 'index.d.ts', 'jsx-runtime.d.ts', 'jsx-dev-runtime.d.ts', 'tsconfig.json', 'vocabulary.json', 'diagnostics.json', 'schema/manifest.schema.json', 'schema/source.schema.json', 'README.md', 'CHANGELOG.md', 'LICENSE']);
 export const ZIP_FILES = Object.freeze(`AGENTS.md
 AUTHORING.md
 LICENSE
@@ -193,7 +193,7 @@ export function parseUstarTarball(input) {
     const prefix = tarString(header.subarray(345, 500));
     const name = safePath(`${prefix ? `${prefix}/` : ''}${tarString(header.subarray(0, 100))}`);
     requireThat(name.startsWith('package/') && PACKAGE_FILES.includes(name.slice(8)) && !files.has(name), `tar member is unexpected or duplicated: ${name}`);
-    requireThat(files.size < 11, 'tarball has too many regular members');
+    requireThat(files.size < PACKAGE_FILES.length, 'tarball has too many regular members');
     const size = octal(header.subarray(124, 136));
     const dataStart = offset + 512;
     const next = dataStart + Math.ceil(size / 512) * 512;
@@ -222,8 +222,31 @@ async function regularFile(path, label) {
 function expectedExports() {
   return {
     '.': { types: './index.d.ts' }, './jsx-runtime': { types: './jsx-runtime.d.ts' }, './jsx-dev-runtime': { types: './jsx-dev-runtime.d.ts' },
-    './tsconfig.json': './tsconfig.json', './schema/manifest.schema.json': './schema/manifest.schema.json', './schema/source.schema.json': './schema/source.schema.json', './vocabulary.json': './vocabulary.json',
+    './diagnostics.json': './diagnostics.json', './tsconfig.json': './tsconfig.json', './schema/manifest.schema.json': './schema/manifest.schema.json', './schema/source.schema.json': './schema/source.schema.json', './vocabulary.json': './vocabulary.json',
   };
+}
+
+export function verifyDiagnosticCatalog(bytes) {
+  const value = JSON.parse(decoder.decode(bytes));
+  keys(value, ['formatVersion', 'diagnostics'], 'diagnostic catalog');
+  requireThat(Buffer.from(bytes).equals(Buffer.from(`${canonicalJson(value)}\n`)), 'diagnostic catalog must use canonical JSON');
+  requireThat(value.formatVersion === 2 && Array.isArray(value.diagnostics) && value.diagnostics.length === 40, 'diagnostic catalog format or population is invalid');
+  const seen = new Set();
+  const populations = { sourceError: 0, sourceWarning: 0, overlayError: 0 };
+  for (const entry of value.diagnostics) {
+    keys(entry, ['code', 'family', 'severity', 'message', 'cause', 'fix', 'docsAnchor', 'docsUrl'], 'diagnostic record');
+    requireThat(typeof entry.code === 'string' && /^[A-Z]+(?:_[A-Z]+)*$/.exec(entry.code)?.[0] === entry.code && entry.code.length <= 80 && !seen.has(entry.code), 'diagnostic code is invalid or duplicated');
+    seen.add(entry.code);
+    for (const [name, maximum] of [['message', 512], ['cause', 1024], ['fix', 1024]]) requireThat(typeof entry[name] === 'string' && [...entry[name]].length >= 1 && [...entry[name]].length <= maximum, `diagnostic ${name} is outside its bound`);
+    const anchor = entry.code.toLowerCase().replaceAll('_', '-');
+    requireThat(entry.docsAnchor === anchor && entry.docsAnchor.length <= 80 && entry.docsUrl === `https://docs.thresho.com/reference/diagnostics#${anchor}` && entry.docsUrl.length <= 75, 'diagnostic URL does not match its code');
+    if (entry.family === 'source' && entry.severity === 'error') populations.sourceError += 1;
+    else if (entry.family === 'source' && entry.severity === 'warning') populations.sourceWarning += 1;
+    else if (entry.family === 'overlay' && entry.severity === 'error') populations.overlayError += 1;
+    else fail('diagnostic family or severity is invalid');
+  }
+  requireThat(populations.sourceError === 33 && populations.sourceWarning === 2 && populations.overlayError === 5, 'diagnostic catalog family population is invalid');
+  return value;
 }
 
 async function inventory(root, allowed) {
@@ -291,6 +314,8 @@ export async function verifyPackage({ root, tag, tarballPath } = {}) {
   }
   const pack = JSON.parse(decoder.decode(entries.get('pack.json')));
   requireThat(pack.packId === manifest.packId && pack.formatVersion === 2 && pack.version === packageJson.version, 'pack.json identity differs from the package');
+  verifyDiagnosticCatalog(found.get('diagnostics.json'));
+  requireThat(found.get('diagnostics.json').equals(entries.get('diagnostics/diagnostics.json')), 'npm and ZIP diagnostic catalogs differ');
   requireThat(found.get('LICENSE').equals(entries.get('LICENSE')) && found.get('LICENSE').toString('utf8').startsWith('MIT License\n'), 'package and pack MIT licence bytes differ');
   for (const name of ['minimal-static', 'retail-apparel', 'retail-home-goods', 'onsite-checkout-inline', 'onsite-checkout-editorial']) requireThat(entries.has(`examples/${name}/thresho.site.json`), `missing public example: ${name}`);
   const packageFiles = new Map(PACKAGE_FILES.map(name => [name, found.get(name)]));

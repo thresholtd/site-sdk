@@ -35,7 +35,17 @@ Content.Text collects and discards its authored children; put visible text in th
 Empty fragments do not satisfy the compiler's Catalog.Products child requirement.
 
 The vocabulary.json file records the shared compiler vocabulary and enforcement boundaries.
-The diagnostic catalog is supplied by a later SDK release.
+The diagnostics.json file contains the generated authoring diagnostic catalog:
+
+```js
+import catalog from "@thresho/site-sdk/diagnostics.json" with { type: "json" };
+```
+
+The catalog has formatVersion 2 and a diagnostics array. Each record contains code, family, severity, message, cause, fix, docsAnchor and docsUrl.
+The authoring pack contains the same catalog bytes. Occurrence messages retain source-specific context; each code has one canonical documentation URL.
+The future thresho CLI (#57) consumes this JSON export and the source-check code, message and docsUrl fields.
+Source checks remain authenticated. The catalog contains no compiler runtime or tenant data.
+Documentation URLs reserve the future diagnostic reference route; this package does not deploy the documentation pages.
 
 Version 2.x targets package format 2. Additions require a minor release; type corrections require a patch release.
 Removal or narrowing requires a major format release.

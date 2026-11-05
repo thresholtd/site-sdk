@@ -63,15 +63,15 @@ async function poisonedPack(input, name, value) {
   await writeFile(join(input.root, 'release/SHA256SUMS'), `${manifest.sha256}  ${manifest.fileName}\n`);
 }
 
-function provenance(tarball) {
+function provenance(tarball, version = '2.0.0') {
   return {
     _type: 'https://in-toto.io/Statement/v1',
-    subject: [{ name: 'pkg:npm/%40thresho/site-sdk@2.0.0', digest: { sha512: createHash('sha512').update(tarball).digest('hex') } }],
+    subject: [{ name: `pkg:npm/%40thresho/site-sdk@${version}`, digest: { sha512: createHash('sha512').update(tarball).digest('hex') } }],
     predicateType: 'https://slsa.dev/provenance/v1',
     predicate: {
       buildDefinition: {
         buildType: 'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1',
-        externalParameters: { workflow: { repository: 'https://github.com/thresholtd/site-sdk', path: '.github/workflows/bootstrap-publish.yml', ref: 'refs/heads/main' } },
+        externalParameters: { workflow: { repository: 'https://github.com/thresholtd/site-sdk', path: version === '2.0.0' ? '.github/workflows/bootstrap-publish.yml' : '.github/workflows/publish.yml', ref: 'refs/heads/main' } },
         resolvedDependencies: [{ uri: 'git+https://github.com/thresholtd/site-sdk@refs/heads/main', digest: { gitCommit: sourceCommit } }],
       },
       runDetails: { builder: { id: 'https://github.com/actions/runner/github-hosted' }, metadata: { invocationId: 'https://github.com/thresholtd/site-sdk/actions/runs/123/attempts/1' } },
@@ -131,21 +131,43 @@ function certificateSan(value) {
   return certificateValue('551d11', der(134, Buffer.from(value)), 48);
 }
 
-async function prepared() {
+async function prepared(version = '2.0.0') {
   const path = await mkdtemp(join(tmpdir(), 'site-sdk-controller-'));
   temporary.push(path);
   const publicRoot = join(path, 'public');
   await cp(root, publicRoot, { recursive: true, filter: source => !['.git', 'node_modules'].includes(relative(root, source).split('/')[0]) });
+  const originalPackage = JSON.parse(await readFile(join(publicRoot, 'package.json'), 'utf8'));
+  if (originalPackage.version !== version) {
+    const manifest = JSON.parse(await readFile(join(publicRoot, 'release/manifest.json'), 'utf8'));
+    const previousName = manifest.fileName;
+    const entries = parseStoreZip(await readFile(join(publicRoot, 'release', previousName)));
+    const pack = JSON.parse(entries.get('pack.json').toString('utf8'));
+    pack.version = version;
+    entries.set('pack.json', Buffer.from(`${canonicalJson(pack)}\n`));
+    const zip = storeZip(entries);
+    originalPackage.version = version;
+    await writeFile(join(publicRoot, 'package.json'), `${JSON.stringify(originalPackage, null, 2)}\n`);
+    Object.assign(manifest, { version, fileName: `thresho-authoring-pack-${version}.zip`, sha256: createHash('sha256').update(zip).digest('hex'), byteLength: zip.length });
+    await rm(join(publicRoot, 'release', previousName));
+    await writeFile(join(publicRoot, 'release', manifest.fileName), zip);
+    await writeFile(join(publicRoot, 'release/manifest.json'), `${canonicalJson(manifest)}\n`);
+    await writeFile(join(publicRoot, 'release/SHA256SUMS'), `${manifest.sha256}  ${manifest.fileName}\n`);
+  }
+  const fixtureTag = `v${version}`;
   const files = new Map(await Promise.all(PACKAGE_FILES.map(async name => [name, await readFile(join(publicRoot, name))])));
   const rawTar = ustar(files);
   const tarball = gzipSync(rawTar, { level: 9 });
   const tarballPath = join(path, 'package.tgz');
   await writeFile(tarballPath, tarball);
-  const verified = await verifyPackage({ root: publicRoot, tag, tarballPath });
+  const verified = await verifyPackage({ root: publicRoot, tag: fixtureTag, tarballPath });
   return { root: publicRoot, tarballPath, tarball, rawTar, verified };
 }
 
 function fakePorts(prepared, options = {}) {
+  const version = prepared.verified.packageJson.version;
+  const tag = `v${version}`;
+  const workflow = version === '2.0.0' ? 'bootstrap-publish.yml' : 'publish.yml';
+  const certificate = version === '2.0.0' ? publicCertificate : certificateSan('https://github.com/thresholtd/site-sdk/.github/workflows/publish.yml@refs/heads/main');
   const writes = [];
   const reads = [];
   const events = [];
@@ -154,7 +176,7 @@ function fakePorts(prepared, options = {}) {
     release: options.release ? { id: 1, tagName: tag, sourceCommit, ...options.release } : null,
     assets: new Map(options.assets ?? []),
     package: options.package ?? null,
-    statement: options.statement ?? provenance(prepared.tarball),
+    statement: options.statement ?? provenance(prepared.tarball, version),
     failedRead: options.failedRead,
   };
   const lost = new Set(options.lost ?? []);
@@ -170,15 +192,15 @@ function fakePorts(prepared, options = {}) {
     effect();
     if (lost.has(name)) throw new Error(`${name} response was lost`);
   };
-  const matching = () => ({ name: '@thresho/site-sdk', version: '2.0.0', tarball: prepared.tarball, integrity: prepared.verified.integrity });
+  const matching = () => ({ name: '@thresho/site-sdk', version, tarball: prepared.tarball, integrity: prepared.verified.integrity });
   const ports = {
     npm: {
-      async readVersion(version) { assert.equal(version, '2.0.0'); observe('npm.readVersion'); return state.package; },
+      async readVersion(requestedVersion) { assert.equal(requestedVersion, version); observe('npm.readVersion'); return state.package; },
       async publish(path) {
         assert.equal(path, prepared.tarballPath);
         apply('npm.publish', () => { assert.equal(state.package, null); state.package = matching(); if (options.tagChangesDuringNpm) state.tag = otherCommit; });
       },
-      async verifySignatures(version) { assert.equal(version, '2.0.0'); observe('npm.verifySignatures'); return options.audited ?? audited(state.statement); },
+      async verifySignatures(requestedVersion) { assert.equal(requestedVersion, version); observe('npm.verifySignatures'); return options.audited ?? audited(state.statement, certificate); },
     },
     github: {
       async readTag(value) { assert.equal(value, tag); observe('github.readTag'); return state.tag; },
@@ -192,7 +214,7 @@ function fakePorts(prepared, options = {}) {
       async uploadAsset(release, name, bytes) { assert.equal(release.id, 1); apply(`github.uploadAsset:${name}`, () => { assert.equal(state.assets.has(name), false); state.assets.set(name, Buffer.from(bytes)); }); },
     },
   };
-  const context = { head: sourceCommit, clean: true, sha: sourceCommit, actions: 'true', repository: 'thresholtd/site-sdk', workflowRef: 'thresholtd/site-sdk/.github/workflows/bootstrap-publish.yml@refs/heads/main', ref: 'refs/heads/main', event: 'workflow_dispatch' };
+  const context = { head: sourceCommit, clean: true, sha: sourceCommit, actions: 'true', repository: 'thresholtd/site-sdk', workflowRef: `thresholtd/site-sdk/.github/workflows/${workflow}@refs/heads/main`, ref: 'refs/heads/main', event: 'workflow_dispatch' };
   const run = (mode = 'publish', overrides = {}) => publishRelease({ mode, root: prepared.root, tag, tarballPath: prepared.tarballPath, sourceCommit: mode === 'release-only' ? sourceCommit : undefined, context, ports, onEvent: event => events.push(event), ...overrides });
   return { ports, state, writes, reads, events, context, run, matching };
 }
@@ -1020,4 +1042,26 @@ test('T15 remote release asset names and conflicting bytes never enter diagnosti
       assert.deepEqual(fake.writes, []);
     }
   }
+});
+
+
+test('T56 regular 2.1 OIDC controller publishes the actual current twelve-file artifact', async () => {
+  const input = await prepared('2.1.0');
+  const fake = fakePorts(input);
+  verifyCliMode({ mode: 'publish', version: '2.1.0', tag: 'v2.1.0', context: fake.context });
+  const result = await fake.run();
+  assert.equal(input.verified.packageFiles.size, 12);
+  assert.equal(result.publicDownloadUrl, 'https://github.com/thresholtd/site-sdk/releases/download/v2.1.0/thresho-authoring-pack-2.1.0.zip');
+  assert.equal(fake.context.workflowRef, 'thresholtd/site-sdk/.github/workflows/publish.yml@refs/heads/main');
+  assert.equal(fake.state.package.version, '2.1.0');
+  assert.ok(fake.writes.includes('npm.publish'));
+});
+
+test('T56 regular 2.1 refuses the removed bootstrap identity before vendor access', async () => {
+  const fake = fakePorts(await prepared('2.1.0'));
+  fake.context.workflowRef = 'thresholtd/site-sdk/.github/workflows/bootstrap-publish.yml@refs/heads/main';
+  assert.throws(() => verifyCliMode({ mode: 'publish', version: '2.1.0', tag: 'v2.1.0', context: fake.context }), /workflow identity/);
+  await assert.rejects(fake.run(), /workflow identity/);
+  assert.deepEqual(fake.reads, []);
+  assert.deepEqual(fake.writes, []);
 });
