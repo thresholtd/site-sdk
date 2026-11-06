@@ -9,7 +9,10 @@ export const ZIP_FILES = Object.freeze(`AGENTS.md
 AUTHORING.md
 LICENSE
 diagnostics/diagnostics.json
+examples/minimal-static/src/pages/About.tsx
 examples/minimal-static/src/pages/Home.tsx
+examples/minimal-static/src/sections/Testimonials.tsx
+examples/minimal-static/src/styles/catalog-sections.css
 examples/minimal-static/src/styles/site.css
 examples/minimal-static/thresho.site.json
 examples/onsite-checkout-editorial/src/cart.css
@@ -20,6 +23,8 @@ examples/onsite-checkout-editorial/src/pages/Catalog.tsx
 examples/onsite-checkout-editorial/src/pages/Checkout.tsx
 examples/onsite-checkout-editorial/src/pages/Detail.tsx
 examples/onsite-checkout-editorial/src/pages/Home.tsx
+examples/onsite-checkout-editorial/src/sections/Testimonials.tsx
+examples/onsite-checkout-editorial/src/styles/catalog-sections.css
 examples/onsite-checkout-editorial/src/styles/site.css
 examples/onsite-checkout-editorial/thresho.site.json
 examples/onsite-checkout-inline/src/cart.css
@@ -30,6 +35,8 @@ examples/onsite-checkout-inline/src/pages/Catalog.tsx
 examples/onsite-checkout-inline/src/pages/Checkout.tsx
 examples/onsite-checkout-inline/src/pages/Detail.tsx
 examples/onsite-checkout-inline/src/pages/Home.tsx
+examples/onsite-checkout-inline/src/sections/Testimonials.tsx
+examples/onsite-checkout-inline/src/styles/catalog-sections.css
 examples/onsite-checkout-inline/src/styles/site.css
 examples/onsite-checkout-inline/thresho.site.json
 examples/retail-apparel/src/components/Card.tsx
@@ -37,6 +44,8 @@ examples/retail-apparel/src/components/Shell.tsx
 examples/retail-apparel/src/pages/Catalog.tsx
 examples/retail-apparel/src/pages/Detail.tsx
 examples/retail-apparel/src/pages/Home.tsx
+examples/retail-apparel/src/sections/Testimonials.tsx
+examples/retail-apparel/src/styles/catalog-sections.css
 examples/retail-apparel/src/styles/site.css
 examples/retail-apparel/thresho.site.json
 examples/retail-home-goods/src/components/Card.tsx
@@ -44,6 +53,8 @@ examples/retail-home-goods/src/components/Shell.tsx
 examples/retail-home-goods/src/pages/Catalog.tsx
 examples/retail-home-goods/src/pages/Detail.tsx
 examples/retail-home-goods/src/pages/Home.tsx
+examples/retail-home-goods/src/sections/Testimonials.tsx
+examples/retail-home-goods/src/styles/catalog-sections.css
 examples/retail-home-goods/src/styles/site.css
 examples/retail-home-goods/thresho.site.json
 external-authoring.md
