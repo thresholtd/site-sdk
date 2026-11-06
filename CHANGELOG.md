@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.0
+
+Add section layout metadata, named leaf slots and the section kit source schema to the format 2 SDK and authoring pack.
+Publish the current page and section authoring guidance with compiler 11 compatibility. Existing format, journey and runtime versions remain unchanged.
+
 ## 2.1.0
 
 Add the generated diagnostic catalog with canonical documentation URLs for all 40 authoring codes.
