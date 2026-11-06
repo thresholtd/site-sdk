@@ -9,6 +9,7 @@ export const ZIP_FILES = Object.freeze(`AGENTS.md
 AUTHORING.md
 LICENSE
 diagnostics/diagnostics.json
+examples/minimal-static/src/pages/About.tsx
 examples/minimal-static/src/pages/Home.tsx
 examples/minimal-static/src/styles/site.css
 examples/minimal-static/thresho.site.json
