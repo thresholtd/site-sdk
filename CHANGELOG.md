@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.3.0
+
+Add named color and text styles, paired light and dark colors, breakpoint sizes and uploaded TrueType font slots to the format 2 source schema.
+Keep compiler 11, journey and runtime versions unchanged. Existing source produces the same compiled output when these optional declarations are absent.
+
 ## 2.2.0
 
 Add section layout metadata, named leaf slots and the section kit source schema to the format 2 SDK and authoring pack.
