@@ -89,11 +89,11 @@ async function packageFiles(path) {
 }
 
 test('T4 accepts the unchanged generated public package and fixed ZIP inventory', async () => {
-  const verified = await verifyPackage({ root: await fixture(), tag: 'v2.1.1' });
+  const verified = await verifyPackage({ root: await fixture(), tag: 'v2.2.0' });
   assert.equal(verified.packageJson.name, '@thresho/site-sdk');
-  assert.equal(verified.manifest.sha256, '4fa6e2758f90aab060d871799d47e3eca750b45b52ed21c18efd242c667a0ccc');
+  assert.equal(verified.manifest.sha256, 'c342081f84e86b8acce6b2cd230ea3def6c2de9d663dd421e437e640226008fd');
   assert.equal(verified.packageFiles.size, 12);
-  assert.equal(parseStoreZip(verified.zip).size, 58);
+  assert.equal(parseStoreZip(verified.zip).size, 68);
   assert.deepEqual([...parseStoreZip(verified.zip).keys()], ZIP_FILES);
 });
 
@@ -107,7 +107,7 @@ for (const key of ['scripts', 'dependencies', 'devDependencies', 'peerDependenci
   test(`T4 rejects forbidden package key ${key}`, async () => {
     const path = await fixture();
     await packageJson(path, value => { value[key] = {}; });
-    await assert.rejects(verifyPackage({ root: path, tag: 'v2.1.1' }), /package.json: unexpected or missing entries/);
+    await assert.rejects(verifyPackage({ root: path, tag: 'v2.2.0' }), /package.json: unexpected or missing entries/);
   });
 }
 
@@ -123,28 +123,28 @@ for (const [name, mutate, expected] of [
   test(`T4 rejects malformed ${name}`, async () => {
     const path = await fixture();
     await packageJson(path, mutate);
-    await assert.rejects(verifyPackage({ root: path, tag: 'v2.1.1' }), expected);
+    await assert.rejects(verifyPackage({ root: path, tag: 'v2.2.0' }), expected);
   });
 }
 
 test('T4 refuses missing, extra, credential-bearing and linked public files', async () => {
   const missing = await fixture();
   await rm(join(missing, 'index.d.ts'));
-  await assert.rejects(verifyPackage({ root: missing, tag: 'v2.1.1' }), /missing public file: index.d.ts/);
+  await assert.rejects(verifyPackage({ root: missing, tag: 'v2.2.0' }), /missing public file: index.d.ts/);
   const extra = await fixture();
   await writeFile(join(extra, 'unexpected.js'), 'export default 1;');
-  await assert.rejects(verifyPackage({ root: extra, tag: 'v2.1.1' }), /unexpected public file: unexpected.js/);
+  await assert.rejects(verifyPackage({ root: extra, tag: 'v2.2.0' }), /unexpected public file: unexpected.js/);
   const credentials = await fixture();
   await writeFile(join(credentials, 'CONTRIBUTING.md'), `npm_${'a'.repeat(36)}`);
-  await assert.rejects(verifyPackage({ root: credentials, tag: 'v2.1.1' }), /credential pattern/);
+  await assert.rejects(verifyPackage({ root: credentials, tag: 'v2.2.0' }), /credential pattern/);
   const linked = await fixture();
   await rm(join(linked, 'LICENSE'));
   await symlink(join(root, 'LICENSE'), join(linked, 'LICENSE'));
-  await assert.rejects(verifyPackage({ root: linked, tag: 'v2.1.1' }), /symlink refused/);
+  await assert.rejects(verifyPackage({ root: linked, tag: 'v2.2.0' }), /symlink refused/);
   const alias = `${await fixture()}-alias`;
   temporary.push(alias);
   await symlink(root, alias, 'dir');
-  for (const suffix of ['', '/', '/.']) await assert.rejects(verifyPackage({ root: `${alias}${suffix}`, tag: 'v2.1.1' }), /root must be a regular directory/);
+  for (const suffix of ['', '/', '/.']) await assert.rejects(verifyPackage({ root: `${alias}${suffix}`, tag: 'v2.2.0' }), /root must be a regular directory/);
 });
 
 test('T4 refuses private instruction replacement under both approved public filenames', async () => {
@@ -152,10 +152,10 @@ test('T4 refuses private instruction replacement under both approved public file
   for (const name of ['AGENTS.md', '.github/copilot-instructions.md']) {
     const path = await fixture();
     await writeFile(join(path, name), privateCanon);
-    await assert.rejects(verifyPackage({ root: path, tag: 'v2.1.1' }), /approved public instruction bytes differ/);
+    await assert.rejects(verifyPackage({ root: path, tag: 'v2.2.0' }), /approved public instruction bytes differ/);
     const changed = await fixture();
     await writeFile(join(changed, name), `${await readFile(join(changed, name), 'utf8')}\nchanged\n`);
-    await assert.rejects(verifyPackage({ root: changed, tag: 'v2.1.1' }), /approved public instruction bytes differ/);
+    await assert.rejects(verifyPackage({ root: changed, tag: 'v2.2.0' }), /approved public instruction bytes differ/);
   }
 });
 
@@ -165,29 +165,29 @@ test('T4 refuses internal instruction and agent directories when empty or popula
       const path = await fixture();
       await mkdir(join(path, directory));
       if (populated) await writeFile(join(path, directory, 'internal.md'), 'Synthetic private instruction file.\n');
-      await assert.rejects(verifyPackage({ root: path, tag: 'v2.1.1' }), /unexpected public directory/);
+      await assert.rejects(verifyPackage({ root: path, tag: 'v2.2.0' }), /unexpected public directory/);
     }
   }
 });
 
 test('T5 refuses ZIP digest, byte length, checksum and manifest identity mismatches', async () => {
   const path = await fixture();
-  const original = await verifyPackage({ root: path, tag: 'v2.1.1' });
+  const original = await verifyPackage({ root: path, tag: 'v2.2.0' });
   await replaceZip(path, Buffer.concat([original.zip, Buffer.from([0])]), false);
-  await assert.rejects(verifyPackage({ root: path, tag: 'v2.1.1' }), /ZIP size or digest mismatch/);
+  await assert.rejects(verifyPackage({ root: path, tag: 'v2.2.0' }), /ZIP size or digest mismatch/);
   await replaceZip(path, original.zip);
   await writeFile(join(path, 'release/SHA256SUMS'), 'wrong\n');
-  await assert.rejects(verifyPackage({ root: path, tag: 'v2.1.1' }), /SHA256SUMS/);
+  await assert.rejects(verifyPackage({ root: path, tag: 'v2.2.0' }), /SHA256SUMS/);
   await replaceZip(path, original.zip);
   const manifest = { ...original.manifest, packId: 'wrong' };
   await writeFile(join(path, 'release/manifest.json'), `${canonicalJson(manifest)}\n`);
-  await assert.rejects(verifyPackage({ root: path, tag: 'v2.1.1' }), /manifest identity/);
+  await assert.rejects(verifyPackage({ root: path, tag: 'v2.2.0' }), /manifest identity/);
 });
 
 test('T5 recomputed digests cannot admit extra ZIP files, altered identity or unsafe examples', async () => {
   for (const variant of ['extra', 'identity', 'external', 'uuid', 'licence']) {
     const path = await fixture();
-    const verified = await verifyPackage({ root: path, tag: 'v2.1.1' });
+    const verified = await verifyPackage({ root: path, tag: 'v2.2.0' });
     const entries = parseStoreZip(verified.zip);
     if (variant === 'extra') entries.set('private-runtime.js', Buffer.from('unapproved'));
     if (variant === 'identity') entries.set('pack.json', Buffer.from(JSON.stringify({ ...JSON.parse(entries.get('pack.json')), version: '9.0.0' })));
@@ -195,7 +195,7 @@ test('T5 recomputed digests cannot admit extra ZIP files, altered identity or un
     if (variant === 'uuid') entries.set('examples/minimal-static/src/pages/Home.tsx', Buffer.from('00000000-0000-4000-8000-000000000001'));
     if (variant === 'licence') entries.set('LICENSE', Buffer.from('different'));
     await replaceZip(path, storeZip(entries));
-    await assert.rejects(verifyPackage({ root: path, tag: 'v2.1.1' }), variant === 'extra' ? /approved ZIP inventory/ : variant === 'identity' ? /pack.json identity/ : variant === 'licence' ? /licence bytes differ/ : /unsafe public example/);
+    await assert.rejects(verifyPackage({ root: path, tag: 'v2.2.0' }), variant === 'extra' ? /approved ZIP inventory/ : variant === 'identity' ? /pack.json identity/ : variant === 'licence' ? /licence bytes differ/ : /unsafe public example/);
   }
 });
 
@@ -203,11 +203,11 @@ test('T5 every ZIP entry rejects credentials after an attacker recomputes both c
   for (const name of ['AUTHORING.md', 'examples/minimal-static/src/pages/Home.tsx']) {
     for (const value of [`npm_${'a'.repeat(36)}`, `github_pat_${'a'.repeat(40)}`, `ghp_${'a'.repeat(36)}`, `AKIA${'A'.repeat(16)}`, ['-----BEGIN ', 'ENCRYPTED PRIVATE KEY', '-----'].join('')]) {
       const path = await fixture();
-      const verified = await verifyPackage({ root: path, tag: 'v2.1.1' });
+      const verified = await verifyPackage({ root: path, tag: 'v2.2.0' });
       const entries = parseStoreZip(verified.zip);
       entries.set(name, Buffer.from(value));
       await replaceZip(path, storeZip(entries));
-      await assert.rejects(verifyPackage({ root: path, tag: 'v2.1.1' }), /credential pattern in ZIP entry/);
+      await assert.rejects(verifyPackage({ root: path, tag: 'v2.2.0' }), /credential pattern in ZIP entry/);
     }
   }
 });
@@ -215,16 +215,16 @@ test('T5 every ZIP entry rejects credentials after an attacker recomputes both c
 test('T5 all canonical UUID forms are refused in public examples', async () => {
   for (const uuid of ['00000000-0000-7000-8000-000000000001', '00000000-0000-0000-0000-000000000000', 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF']) {
     const path = await fixture();
-    const verified = await verifyPackage({ root: path, tag: 'v2.1.1' });
+    const verified = await verifyPackage({ root: path, tag: 'v2.2.0' });
     const entries = parseStoreZip(verified.zip);
     entries.set('examples/minimal-static/src/pages/Home.tsx', Buffer.from(uuid));
     await replaceZip(path, storeZip(entries));
-    await assert.rejects(verifyPackage({ root: path, tag: 'v2.1.1' }), /unsafe public example/);
+    await assert.rejects(verifyPackage({ root: path, tag: 'v2.2.0' }), /unsafe public example/);
   }
 });
 
 test('T5 refuses malformed ZIP structure independently from digest checks', async () => {
-  const verified = await verifyPackage({ root: await fixture(), tag: 'v2.1.1' });
+  const verified = await verifyPackage({ root: await fixture(), tag: 'v2.2.0' });
   const central = verified.zip.readUInt32LE(verified.zip.length - 6);
   const variants = [
     ['truncation', bytes => bytes.subarray(0, bytes.length - 10), /EOCD|central|truncated/],
@@ -252,7 +252,7 @@ test('T6 accepts the actual npm tarball and matches all twelve regular member by
   temporary.push(destination);
   const packed = JSON.parse(execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', destination], { cwd: path, encoding: 'utf8', timeout: 30000 }));
   const tarballPath = join(destination, packed[0].filename);
-  const verified = await verifyPackage({ root: path, tag: 'v2.1.1', tarballPath });
+  const verified = await verifyPackage({ root: path, tag: 'v2.2.0', tarballPath });
   assert.equal(parseUstarTarball(verified.tarball).size, 12);
   assert.equal(verified.integrity, `sha512-${createHash('sha512').update(verified.tarball).digest('base64')}`);
 });
@@ -286,7 +286,7 @@ test('T6 bounds gzip expansion and rejects tar corruption or altered file bytes'
   assert.throws(() => parseUstarTarball(gzipSync(Buffer.alloc(2097153))), /gzip is invalid or oversized/);
   assert.throws(() => parseUstarTarball(Buffer.alloc(1048577)), /compressed size/);
   assert.throws(() => parseUstarTarball(gzipSync(tar.subarray(0, tar.length - 513))), /size or zero end padding/);
-  const verified = await verifyPackage({ root: path, tag: 'v2.1.1' });
+  const verified = await verifyPackage({ root: path, tag: 'v2.2.0' });
   const changed = new Map(files); changed.set('package/index.d.ts', Buffer.from('altered'));
   assert.throws(() => verifyTarball(gzipSync(ustar(changed)), verified.packageFiles), /differs from generated package: index.d.ts/);
 });
@@ -294,7 +294,7 @@ test('T6 bounds gzip expansion and rejects tar corruption or altered file bytes'
 
 test('T56 verifies the immutable forty-code catalog shared by npm and ZIP', async () => {
   const path = await fixture();
-  const verified = await verifyPackage({ root: path, tag: 'v2.1.1' });
+  const verified = await verifyPackage({ root: path, tag: 'v2.2.0' });
   const bytes = verified.packageFiles.get('diagnostics.json');
   const catalog = verifyDiagnosticCatalog(bytes);
   assert.equal(catalog.diagnostics.length, 40);
@@ -330,7 +330,7 @@ for (const [name, mutate, expected] of [
     const entries = parseStoreZip(await readFile(join(path, 'release', manifest.fileName)));
     entries.set('diagnostics/diagnostics.json', bytes);
     await replaceZip(path, storeZip(entries));
-    await assert.rejects(verifyPackage({ root: path, tag: 'v2.1.1' }), expected);
+    await assert.rejects(verifyPackage({ root: path, tag: 'v2.2.0' }), expected);
   });
 }
 
@@ -339,5 +339,5 @@ test('T56 refuses catalog byte drift even when each catalog is valid', async () 
   const value = JSON.parse(await readFile(join(path, 'diagnostics.json'), 'utf8'));
   value.diagnostics[0].message = 'A different valid explanatory message.';
   await writeFile(join(path, 'diagnostics.json'), `${canonicalJson(value)}\n`);
-  await assert.rejects(verifyPackage({ root: path, tag: 'v2.1.1' }), /npm and ZIP diagnostic catalogs differ/);
+  await assert.rejects(verifyPackage({ root: path, tag: 'v2.2.0' }), /npm and ZIP diagnostic catalogs differ/);
 });

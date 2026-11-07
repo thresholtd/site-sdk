@@ -1,6 +1,6 @@
 {
   "name": "@thresho/site-sdk",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -39,7 +39,7 @@
   ],
   "thresho": {
     "formatVersion": 2,
-    "compilerVersion": "site-source-compiler/10",
-    "vocabularyDigest": "c39d5c38e77cd041167eb953514c6de5c6b3acf8d6450a226db5d7494e76e638"
+    "compilerVersion": "site-source-compiler/11",
+    "vocabularyDigest": "38ecb0287cdbe0fb1de6c2ac91f0202f049fba9e871ae3469842cadeb5170910"
   }
 }
