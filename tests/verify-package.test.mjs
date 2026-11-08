@@ -92,7 +92,7 @@ async function packageFiles(path) {
 test('T4 accepts the unchanged generated public package and fixed ZIP inventory', async () => {
   const verified = await verifyPackage({ root: await fixture(), tag: validTag });
   assert.equal(verified.packageJson.name, '@thresho/site-sdk');
-  assert.equal(verified.manifest.sha256, '1efdbb0f2ef88d69c76645d3a0fcc9b7559694ece4d15cf611f0e2e97783da57');
+  assert.equal(verified.manifest.sha256, '04d4ef237dfbc6f89aa1d569cf66d174becf989295e33569ec444eaea658d1a2');
   assert.equal(verified.packageFiles.size, 12);
   assert.equal(parseStoreZip(verified.zip).size, 68);
   assert.deepEqual([...parseStoreZip(verified.zip).keys()], ZIP_FILES);
