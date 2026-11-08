@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.4.1
+
+Allow image declarations and extension image slots within the source byte and processing budgets without an image-count ceiling.
+Retain the maximum of 32 video declarations independently from image declarations.
+
+## 2.4.0
+
+Add managed social image identities to route search metadata and allow editable content keys up to 128 characters.
+Keep format 2, compiler 11, journey and runtime versions unchanged.
+
 ## 2.3.0
 
 Add named color and text styles, paired light and dark colors, breakpoint sizes and uploaded TrueType font slots to the format 2 source schema.
