@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.5.0
+
+Make uploaded TrueType font declarations portable: retain the logical slot, digest and face settings, and remove asset identities and delivery URLs from source. Target compiler 12.
+
 ## 2.4.1
 
 Allow image declarations and extension image slots within the source byte and processing budgets without an image-count ceiling.

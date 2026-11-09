@@ -48,6 +48,10 @@ Source checks remain authenticated. The catalog contains no compiler runtime or 
 Documentation URLs reserve the future diagnostic reference route; this package does not deploy the documentation pages.
 
 Version 2.x targets package format 2. Additions require a minor release; type corrections require a patch release.
-Removal or narrowing requires a major format release.
+SDK 2.5.0 targets compiler 12 and adopts the portable eight-field uploaded-font declaration within source format 2.
+Uploaded declarations containing assetId or url must be updated. Builtin declarations and format 2 remain unchanged.
+Other removal or narrowing requires a major format release.
 
 The SDK and public authoring pack use the MIT licence. The thresho compiler and service runtime are separate products.
+
+Uploaded TrueType fonts declare only slot, family (`uploaded`), name, sha256, weight, style, display (`swap`) and preload. Asset identities and delivery URLs belong to the workspace. Preserve the exact font bytes and declared digest when transferring source between sites.
