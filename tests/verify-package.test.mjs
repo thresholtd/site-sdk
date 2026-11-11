@@ -92,7 +92,7 @@ async function packageFiles(path) {
 test('T4 accepts the unchanged generated public package and fixed ZIP inventory', async () => {
   const verified = await verifyPackage({ root: await fixture(), tag: validTag });
   assert.equal(verified.packageJson.name, '@thresho/site-sdk');
-  assert.equal(verified.manifest.sha256, '93b899acc406f09969cf8cdb7ac682a04b5ecf159afe87ad312a9d537ab2b956');
+  assert.equal(verified.manifest.sha256, 'd4a6b42e21b8fe0c4f0effe9b49aceb4cc3a6a17a4c9c58ee79261dd2e3b34d7');
   assert.equal(verified.packageFiles.size, 12);
   assert.equal(parseStoreZip(verified.zip).size, 68);
   assert.deepEqual([...parseStoreZip(verified.zip).keys()], ZIP_FILES);
@@ -293,12 +293,12 @@ test('T6 bounds gzip expansion and rejects tar corruption or altered file bytes'
 });
 
 
-test('T56 verifies the immutable forty-code catalog shared by npm and ZIP', async () => {
+test('T56 verifies the immutable forty-seven-code catalog shared by npm and ZIP', async () => {
   const path = await fixture();
   const verified = await verifyPackage({ root: path, tag: validTag });
   const bytes = verified.packageFiles.get('diagnostics.json');
   const catalog = verifyDiagnosticCatalog(bytes);
-  assert.equal(catalog.diagnostics.length, 40);
+  assert.equal(catalog.diagnostics.length, 47);
   assert.deepEqual(catalog.diagnostics.find(value => value.code === 'INVALID_PACKAGE').docsUrl, 'https://docs.thresho.com/reference/diagnostics#invalid-package');
   assert.equal(catalog.diagnostics.find(value => value.code === 'SEO_TITLE_LENGTH').severity, 'warning');
   assert.equal(catalog.diagnostics.find(value => value.code === 'OVERLAY_COMPILE_FAILED').family, 'overlay');
@@ -309,6 +309,10 @@ test('T56 verifies the immutable forty-code catalog shared by npm and ZIP', asyn
 for (const [name, mutate, expected] of [
   ['format', value => { value.formatVersion = 1; }, /format or population/],
   ['population', value => { value.diagnostics.pop(); }, /format or population/],
+  ['population surplus', value => { value.diagnostics.push({ ...value.diagnostics.find(entry => entry.code === 'COLLECTION_LIMIT_RANGE'), code: 'COLLECTION_LIMIT_EXTRA', docsAnchor: 'collection-limit-extra', docsUrl: 'https://docs.thresho.com/reference/diagnostics#collection-limit-extra' }); }, /format or population/],
+  ['source warning split', value => { value.diagnostics.find(entry => entry.code === 'COLLECTION_LIMIT_RANGE').severity = 'warning'; }, /family population is invalid/],
+  ['overlay error split', value => { value.diagnostics.find(entry => entry.code === 'COLLECTION_LIMIT_RANGE').family = 'overlay'; }, /family population is invalid/],
+  ['URL bound', value => { const entry = value.diagnostics.find(candidate => candidate.code === 'COLLECTION_ITEM_ROUTE_DUPLICATE'); entry.code = 'COLLECTION_ITEM_ROUTE_DUPLICATES'; entry.docsAnchor = 'collection-item-route-duplicates'; entry.docsUrl = 'https://docs.thresho.com/reference/diagnostics#collection-item-route-duplicates'; }, /URL does not match/],
   ['unknown field', value => { value.diagnostics[0].unexpected = true; }, /diagnostic record/],
   ['duplicate code', value => { value.diagnostics[0].code = value.diagnostics[1].code; value.diagnostics[0].docsAnchor = value.diagnostics[1].docsAnchor; value.diagnostics[0].docsUrl = value.diagnostics[1].docsUrl; }, /duplicated/],
   ['prototype code', value => { value.diagnostics[0].code = 'constructor'; }, /diagnostic code/],

@@ -241,7 +241,7 @@ export function verifyDiagnosticCatalog(bytes) {
   const value = JSON.parse(decoder.decode(bytes));
   keys(value, ['formatVersion', 'diagnostics'], 'diagnostic catalog');
   requireThat(Buffer.from(bytes).equals(Buffer.from(`${canonicalJson(value)}\n`)), 'diagnostic catalog must use canonical JSON');
-  requireThat(value.formatVersion === 2 && Array.isArray(value.diagnostics) && value.diagnostics.length === 40, 'diagnostic catalog format or population is invalid');
+  requireThat(value.formatVersion === 2 && Array.isArray(value.diagnostics) && value.diagnostics.length === 47, 'diagnostic catalog format or population is invalid');
   const seen = new Set();
   const populations = { sourceError: 0, sourceWarning: 0, overlayError: 0 };
   for (const entry of value.diagnostics) {
@@ -250,13 +250,13 @@ export function verifyDiagnosticCatalog(bytes) {
     seen.add(entry.code);
     for (const [name, maximum] of [['message', 512], ['cause', 1024], ['fix', 1024]]) requireThat(typeof entry[name] === 'string' && [...entry[name]].length >= 1 && [...entry[name]].length <= maximum, `diagnostic ${name} is outside its bound`);
     const anchor = entry.code.toLowerCase().replaceAll('_', '-');
-    requireThat(entry.docsAnchor === anchor && entry.docsAnchor.length <= 80 && entry.docsUrl === `https://docs.thresho.com/reference/diagnostics#${anchor}` && entry.docsUrl.length <= 75, 'diagnostic URL does not match its code');
+    requireThat(entry.docsAnchor === anchor && entry.docsAnchor.length <= 80 && entry.docsUrl === `https://docs.thresho.com/reference/diagnostics#${anchor}` && entry.docsUrl.length <= 78, 'diagnostic URL does not match its code');
     if (entry.family === 'source' && entry.severity === 'error') populations.sourceError += 1;
     else if (entry.family === 'source' && entry.severity === 'warning') populations.sourceWarning += 1;
     else if (entry.family === 'overlay' && entry.severity === 'error') populations.overlayError += 1;
     else fail('diagnostic family or severity is invalid');
   }
-  requireThat(populations.sourceError === 33 && populations.sourceWarning === 2 && populations.overlayError === 5, 'diagnostic catalog family population is invalid');
+  requireThat(populations.sourceError === 40 && populations.sourceWarning === 2 && populations.overlayError === 5, 'diagnostic catalog family population is invalid');
   return value;
 }
 
