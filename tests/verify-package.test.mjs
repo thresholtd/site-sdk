@@ -310,6 +310,8 @@ for (const [name, mutate, expected] of [
   ['format', value => { value.formatVersion = 1; }, /format or population/],
   ['population', value => { value.diagnostics.pop(); }, /format or population/],
   ['population surplus', value => { value.diagnostics.push({ ...value.diagnostics.find(entry => entry.code === 'COLLECTION_LIMIT_RANGE'), code: 'COLLECTION_LIMIT_EXTRA', docsAnchor: 'collection-limit-extra', docsUrl: 'https://docs.thresho.com/reference/diagnostics#collection-limit-extra' }); }, /format or population/],
+  ['source warning split', value => { value.diagnostics.find(entry => entry.code === 'COLLECTION_LIMIT_RANGE').severity = 'warning'; }, /family population is invalid/],
+  ['overlay error split', value => { value.diagnostics.find(entry => entry.code === 'COLLECTION_LIMIT_RANGE').family = 'overlay'; }, /family population is invalid/],
   ['URL bound', value => { const entry = value.diagnostics.find(candidate => candidate.code === 'COLLECTION_ITEM_ROUTE_DUPLICATE'); entry.code = 'COLLECTION_ITEM_ROUTE_DUPLICATES'; entry.docsAnchor = 'collection-item-route-duplicates'; entry.docsUrl = 'https://docs.thresho.com/reference/diagnostics#collection-item-route-duplicates'; }, /URL does not match/],
   ['unknown field', value => { value.diagnostics[0].unexpected = true; }, /diagnostic record/],
   ['duplicate code', value => { value.diagnostics[0].code = value.diagnostics[1].code; value.diagnostics[0].docsAnchor = value.diagnostics[1].docsAnchor; value.diagnostics[0].docsUrl = value.diagnostics[1].docsUrl; }, /duplicated/],
