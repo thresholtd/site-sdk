@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.6.0
+
+Add the Collection components, the `content.collectionItem` route capability and the collection requirements to the format 2 SDK and authoring pack. Target compiler 12.
+
 ## 2.5.0
 
 Make uploaded TrueType font declarations portable: retain the logical slot, digest and face settings, and remove asset identities and delivery URLs from source. Target compiler 12.
